@@ -42,14 +42,15 @@ class TaskPlanner:
         bounds = workspace.get("bounds", [0.1, 0.9, -0.4, 0.4])
         surface_height = workspace.get("surface_height", 0.42)
 
-        system_prompt = self._prompt_template.format(
-            surface_height=surface_height,
-            x_min=bounds[0],
-            x_max=bounds[1],
-            y_min=bounds[2],
-            y_max=bounds[3],
-            scene_state=json.dumps(scene_state, indent=2),
-            task=task,
+        system_prompt = (
+            self._prompt_template
+            .replace("{surface_height}", str(surface_height))
+            .replace("{x_min}", str(bounds[0]))
+            .replace("{x_max}", str(bounds[1]))
+            .replace("{y_min}", str(bounds[2]))
+            .replace("{y_max}", str(bounds[3]))
+            .replace("{scene_state}", json.dumps(scene_state, indent=2))
+            .replace("{task}", task)
         )
 
         logger.info(f"Planning next step for task: {task}")

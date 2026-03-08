@@ -248,7 +248,7 @@ async def test_executor_max_iterations():
     # Always return commands and never verify as complete
     mock_llm.generate.side_effect = lambda *args, **kwargs: (
         {"step_description": "Try again", "commands": [{"type": "grip_open"}]}
-        if "Plan" in args[1]
+        if "Plan" in kwargs.get("user_prompt", args[1] if len(args) > 1 else "")
         else {"completed": False, "reason": "Not done", "confidence": 0.5}
     )
 

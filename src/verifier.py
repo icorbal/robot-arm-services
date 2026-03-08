@@ -41,10 +41,11 @@ class TaskVerifier:
         workspace = scene_state.get("workspace", {})
         surface_height = workspace.get("surface_height", 0.42)
 
-        system_prompt = self._prompt_template.format(
-            surface_height=surface_height,
-            scene_state=json.dumps(scene_state, indent=2),
-            task=task,
+        system_prompt = (
+            self._prompt_template
+            .replace("{surface_height}", str(surface_height))
+            .replace("{scene_state}", json.dumps(scene_state, indent=2))
+            .replace("{task}", task)
         )
 
         logger.info(f"Verifying task completion: {task}")
