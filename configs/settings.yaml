@@ -1,0 +1,11 @@
+rasim:
+  url: "http://localhost:8100"
+
+llm:
+  provider: "openai"
+  model: "gpt-4o"
+  api_key_env: "OPENAI_API_KEY"
+
+executor:
+  max_iterations: 10
+  step_delay: 0.5
