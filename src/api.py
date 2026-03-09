@@ -72,3 +72,20 @@ async def execute_task(request: TaskRequest):
     except Exception as e:
         logger.error(f"Task execution failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/task/cancel")
+async def cancel_task():
+    """Cancel the currently running task."""
+    executor = get_executor()
+    cancelled = executor.cancel()
+    if cancelled:
+        return {"status": "cancelled", "message": "Task cancellation requested"}
+    return {"status": "idle", "message": "No task is currently running"}
+
+
+@app.get("/task/status")
+async def task_status():
+    """Check if a task is currently running."""
+    executor = get_executor()
+    return {"running": executor.is_running}

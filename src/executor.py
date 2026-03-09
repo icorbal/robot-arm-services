@@ -29,10 +29,25 @@ class TaskExecutor:
         self._max_iterations = max_iterations
         self._step_delay = step_delay
         self._client = httpx.AsyncClient(timeout=30.0)
+        self._cancel_event: asyncio.Event | None = None
+        self._running = False
         logger.info(
             f"TaskExecutor initialized (rasim={rasim_url}, "
             f"max_iter={max_iterations}, delay={step_delay}s)"
         )
+
+    @property
+    def is_running(self) -> bool:
+        """Whether a task is currently executing."""
+        return self._running
+
+    def cancel(self) -> bool:
+        """Cancel the currently running task. Returns True if a task was running."""
+        if self._cancel_event and self._running:
+            logger.info("Cancellation requested")
+            self._cancel_event.set()
+            return True
+        return False
 
     async def close(self) -> None:
         """Clean up HTTP client."""
@@ -64,9 +79,31 @@ class TaskExecutor:
         """
         logger.info(f"Starting task execution: {task}")
         execution_log: list[dict] = []
+        self._cancel_event = asyncio.Event()
+        self._running = True
 
+        try:
+            return await self._run_loop(task, execution_log)
+        finally:
+            self._running = False
+            self._cancel_event = None
+
+    async def _run_loop(
+        self, task: str, execution_log: list[dict]
+    ) -> dict[str, Any]:
+        """Internal execution loop (separated for cancellation cleanup)."""
         for iteration in range(1, self._max_iterations + 1):
             logger.info(f"--- Iteration {iteration}/{self._max_iterations} ---")
+
+            # Check for cancellation
+            if self._cancel_event and self._cancel_event.is_set():
+                logger.info("Task cancelled by user")
+                return {
+                    "status": "cancelled",
+                    "task": task,
+                    "iterations": iteration,
+                    "log": execution_log,
+                }
 
             # 1. Get scene state
             try:
@@ -189,6 +226,16 @@ class TaskExecutor:
                     "iterations": iteration,
                     "final_scene_state": updated_state,
                     "verification": verification,
+                    "log": execution_log,
+                }
+
+            # Check for cancellation before next iteration
+            if self._cancel_event and self._cancel_event.is_set():
+                logger.info("Task cancelled by user after execution step")
+                return {
+                    "status": "cancelled",
+                    "task": task,
+                    "iterations": iteration,
                     "log": execution_log,
                 }
 
