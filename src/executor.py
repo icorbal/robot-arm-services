@@ -104,17 +104,35 @@ class TaskExecutor:
             commands = plan.get("commands", [])
             step_desc = plan.get("step_description", "")
 
-            # No commands = planner thinks we're done
+            # No commands = planner thinks we're done — verify before stopping
             if not commands:
-                logger.info("Planner returned no commands - task may be complete")
+                logger.info("Planner returned no commands — verifying before stopping")
+                try:
+                    check = await self._verifier.verify(scene_state, task)
+                except Exception as e:
+                    check = {"completed": False, "reason": str(e), "confidence": 0.0}
+
+                if check.get("completed", False):
+                    logger.info(f"Task verified complete: {check.get('reason')}")
+                    return {
+                        "status": "completed",
+                        "task": task,
+                        "iterations": iteration,
+                        "final_scene_state": scene_state,
+                        "verification": check,
+                        "log": execution_log,
+                    }
+
+                # Not actually done — tell planner to try again
+                logger.warning("Planner thinks done but verifier disagrees — retrying")
                 execution_log.append({
                     "iteration": iteration,
-                    "phase": "planning",
+                    "phase": "replanning",
                     "step_description": step_desc,
                     "commands": [],
-                    "note": "No commands returned",
+                    "note": f"Planner returned no commands but task not complete: {check.get('reason')}",
                 })
-                break
+                continue
 
             # 3. Execute commands on RASim
             try:
