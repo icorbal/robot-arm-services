@@ -28,7 +28,7 @@ class TaskExecutor:
         self._rasim_url = rasim_url.rstrip("/")
         self._max_iterations = max_iterations
         self._step_delay = step_delay
-        self._client = httpx.AsyncClient(timeout=30.0)
+        self._client = httpx.AsyncClient(timeout=10.0)
         self._cancel_event: asyncio.Event | None = None
         self._running = False
         logger.info(
@@ -101,6 +101,7 @@ class TaskExecutor:
         response = await self._client.post(
             f"{self._rasim_url}/execute",
             json={"commands": commands},
+            timeout=60.0,  # Arm movements can be slow
         )
         response.raise_for_status()
         return response.json()
