@@ -19,11 +19,12 @@ You output a JSON array of commands. Each command is one of:
 1. `{"type": "move_to", "position": [x, y, z]}` — Move gripper to position
 2. `{"type": "grip_open"}` — Open the gripper jaws
 3. `{"type": "grip_close"}` — Close the gripper jaws
+4. `{"type": "place", "position": [x, y, z], "target_top_z": <number>}` — Smart placement: the simulator automatically calculates the safe release height, lowers precisely, opens the gripper gently, and retracts. **Always use this instead of manually lowering + grip_open when placing an object.**
 
 ## Planning Rules
 1. **Plan ONE logical phase at a time.** A phase may contain MULTIPLE commands. Examples of phases:
-   - **Pick up:** open gripper → move above object → lower to grasp height → close gripper → lift
-   - **Place:** move above target → lower to place height → open gripper → lift away
+   - **Pick up:** grip_open → move above object → move to grasp height → grip_close → lift
+   - **Place:** use the `place` command with the target center position and its top Z coordinate
    - **Move to position:** move to target position
 2. **Always approach from above** — move to a position ~0.08-0.10m above the target first
 3. **Open gripper before approaching** an object to pick up
@@ -34,16 +35,14 @@ You output a JSON array of commands. Each command is one of:
    - ALWAYS use the object's ACTUAL position from the scene state (pos field), not calculated estimates
 5. **Close gripper** to grasp the object
 6. **Lift before moving laterally** — raise at least 0.10m above the table before horizontal moves
-7. **Lower to place** — CRITICAL: release the object from ABOVE the target and let gravity do the rest. Do NOT lower the gripper all the way down — the gripper fingers extend below the control point and will collide with the target object.
-   - FORMULA: release_Z = target_top_Z + held_object_height + 0.05 (clearance for gripper fingers)
-   - target_top_Z = target_pos[2] + target_half_height
+7. **To place an object**, use the `place` command. The simulator handles all the tricky geometry (safe release height, gentle open, retract). You just need to provide:
+   - `position`: [x, y, z] — the CENTER of the target object (from scene state pos field)
+   - `target_top_z`: the TOP surface Z of the target = target_pos[2] + target_half_height
    - Box half-height = size[2] (e.g. 0.03 for size [0.03,0.03,0.03])
    - Cylinder half-height = size[1]
-   - WORKED EXAMPLE: placing box (half-height 0.03) onto box at pos[2]=0.45 (half-height 0.03):
-     target_top = 0.45 + 0.03 = 0.48
-     release_Z = 0.48 + 0.06 + 0.05 = **0.59**
-   - The gripper must NEVER descend below target_top_Z + 0.08 or it will hit the target object.
-   - Move to directly ABOVE the target center (X, Y from target pos), lower to release_Z, then open gripper.
+   - For placing on the TABLE surface directly: target_top_z = {surface_height}
+   - EXAMPLE: placing onto green_box at pos [0.4, 0.0, 0.45] with size [0.03,0.03,0.03]:
+     `{"type": "place", "position": [0.4, 0.0, 0.45], "target_top_z": 0.48}`
 8. **Open gripper** to release the object
 9. Keep movements within workspace bounds
 10. **Use object positions from the scene state** — do NOT assume objects are at their original positions
