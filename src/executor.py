@@ -82,9 +82,9 @@ class TaskExecutor:
                     "log": execution_log,
                 }
 
-            # 2. Plan next step
+            # 2. Plan next step (with history of previous steps)
             try:
-                plan = await self._planner.plan_next_step(scene_state, task)
+                plan = await self._planner.plan_next_step(scene_state, task, history=execution_log)
             except Exception as e:
                 error_msg = f"Planning failed: {e}"
                 logger.error(error_msg)

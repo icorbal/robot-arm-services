@@ -27,13 +27,15 @@ class TaskPlanner:
             return f.read()
 
     async def plan_next_step(
-        self, scene_state: dict[str, Any], task: str
+        self, scene_state: dict[str, Any], task: str,
+        history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Plan the next step to accomplish the task.
 
         Args:
             scene_state: Current scene state from RASim
             task: Natural language task description
+            history: List of previous execution log entries
 
         Returns:
             Dict with "step_description" and "commands" list
@@ -41,6 +43,21 @@ class TaskPlanner:
         workspace = scene_state.get("workspace", {})
         bounds = workspace.get("bounds", [0.1, 0.9, -0.4, 0.4])
         surface_height = workspace.get("surface_height", 0.42)
+
+        # Build history summary
+        if history:
+            history_lines = []
+            for entry in history:
+                desc = entry.get("step_description", "unknown")
+                cmds = entry.get("commands", [])
+                cmd_summary = ", ".join(
+                    c.get("type", "?") + (f" {c['position']}" if "position" in c else "")
+                    for c in cmds
+                )
+                history_lines.append(f"- {desc}: [{cmd_summary}]")
+            history_text = "\n".join(history_lines)
+        else:
+            history_text = "None (this is the first step)"
 
         system_prompt = (
             self._prompt_template
@@ -51,12 +68,13 @@ class TaskPlanner:
             .replace("{y_max}", str(bounds[3]))
             .replace("{scene_state}", json.dumps(scene_state, indent=2))
             .replace("{task}", task)
+            .replace("{history}", history_text)
         )
 
         logger.info(f"Planning next step for task: {task}")
         result = await self._llm.generate(
             system_prompt=system_prompt,
-            user_prompt=f"Plan the next step for: {task}",
+            user_prompt=f"Plan the next phase for: {task}",
         )
 
         # Validate response format

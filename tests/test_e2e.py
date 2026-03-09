@@ -40,7 +40,7 @@ class MockLLMForStackTask:
         self._plan_count = 0
 
     async def generate(self, system_prompt: str, user_prompt: str) -> dict:
-        if "Plan the next step" in user_prompt:
+        if "Plan the next" in user_prompt:
             return self._plan_next()
         elif "Is this task complete" in user_prompt:
             return self._verify(system_prompt)
