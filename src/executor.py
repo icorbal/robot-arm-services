@@ -53,6 +53,43 @@ class TaskExecutor:
         """Clean up HTTP client."""
         await self._client.aclose()
 
+    def _check_fallen_props(self, state: dict[str, Any]) -> list[str]:
+        """Check if any props have fallen off the table.
+
+        A prop is considered fallen if its Z position is below the workspace
+        surface height minus a tolerance (accounting for object size).
+        Also checks X/Y bounds.
+
+        Returns:
+            List of fallen prop IDs (empty if all props are safe).
+        """
+        fallen = []
+        workspace = state.get("workspace", {})
+        surface_z = workspace.get("surface_height", 0.42)
+        bounds = workspace.get("bounds", [0.1, 0.9, -0.4, 0.4])
+        x_min, x_max, y_min, y_max = bounds
+
+        # Generous margin for objects near edges
+        margin = 0.15
+
+        for prop in state.get("props", []):
+            pos = prop.get("pos", [0, 0, 0])
+            pid = prop.get("id", "unknown")
+
+            # Fell below table (Z check with small tolerance for resting objects)
+            if pos[2] < surface_z - 0.05:
+                logger.warning(f"Prop {pid} fell below table: Z={pos[2]:.4f} (surface={surface_z})")
+                fallen.append(pid)
+                continue
+
+            # Flew off the table laterally
+            if (pos[0] < x_min - margin or pos[0] > x_max + margin or
+                    pos[1] < y_min - margin or pos[1] > y_max + margin):
+                logger.warning(f"Prop {pid} out of bounds: pos={pos}")
+                fallen.append(pid)
+
+        return fallen
+
     async def _get_scene_state(self) -> dict[str, Any]:
         """Fetch current scene state from RASim."""
         response = await self._client.get(f"{self._rasim_url}/scene-state")
@@ -208,6 +245,27 @@ class TaskExecutor:
             except httpx.HTTPError as e:
                 logger.error(f"Failed to get updated scene state: {e}")
                 updated_state = exec_result.get("scene_state", scene_state)
+
+            # 4b. Safety check: abort if any prop fell off the table
+            fallen = self._check_fallen_props(updated_state)
+            if fallen:
+                names = ", ".join(fallen)
+                error_msg = f"Safety abort: prop(s) fell off the table: {names}"
+                logger.error(error_msg)
+                execution_log.append({
+                    "iteration": iteration,
+                    "phase": "safety_abort",
+                    "fallen_props": fallen,
+                })
+                return {
+                    "status": "safety_abort",
+                    "error": error_msg,
+                    "task": task,
+                    "iterations": iteration,
+                    "fallen_props": fallen,
+                    "final_scene_state": updated_state,
+                    "log": execution_log,
+                }
 
             # 5. Verify task completion
             try:
