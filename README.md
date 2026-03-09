@@ -1,6 +1,6 @@
 # Robot Arm Services (RAServ)
 
-LLM-powered task planner and executor for robot arm control. Part of the Robot Arm project — works with [Robot Arm Simulator (RASim)](https://github.com/iagocorbal/robot-arm-sim) for physics simulation.
+LLM-powered task planner and executor for robot arm control. Part of the Robot Arm project — works with [Robot Arm Simulator (RASim)](https://github.com/icorbal/robot-arm-sim) for physics simulation.
 
 ## Overview
 
@@ -12,7 +12,7 @@ Accepts natural language tasks (e.g., "put the blue box on top of the red one"),
 
 ```bash
 # Clone and set up
-git clone https://github.com/iagocorbal/robot-arm-services.git
+git clone https://github.com/icorbal/robot-arm-services.git
 cd robot-arm-services
 python3 -m venv venv
 source venv/bin/activate
@@ -32,7 +32,7 @@ source .env && python run.py
 ## Prerequisites
 
 - Python 3.11+
-- [RASim](https://github.com/iagocorbal/robot-arm-sim) running (default: `http://localhost:8100`)
+- [RASim](https://github.com/icorbal/robot-arm-sim) running (default: `http://localhost:8100`)
 - OpenAI API key with access to gpt-4o (or your configured model)
 
 ## Configuration
