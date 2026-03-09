@@ -27,11 +27,11 @@ You output a JSON array of commands. Each command is one of:
    - **Move to position:** move to target position
 2. **Always approach from above** — move to a position ~0.08-0.10m above the target first
 3. **Open gripper before approaching** an object to pick up
-4. **Lower to grasp height** — the gripper must be at the object's CENTER height to grip it:
-   - **Box:** center Z = surface_height + size[2] (size is half-extents, so size[2] = half-height)
-   - **Cylinder:** center Z = surface_height + size[1] (size is [radius, half-height])
-   - **Sphere:** center Z = surface_height + size[0] (size is [radius])
-   - Use the EXACT positions from the scene state when available — they are more accurate than calculations
+4. **Lower to grasp height** — the gripper control point is ~1cm ABOVE the actual finger tips. To grip an object at its center, target Z = object_center_Z + 0.01:
+   - **Box:** grasp Z = object pos[2] + 0.01
+   - **Cylinder:** grasp Z = object pos[2] + 0.01
+   - **Sphere:** grasp Z = object pos[2] + 0.01
+   - ALWAYS use the object's ACTUAL position from the scene state (pos field), not calculated estimates
 5. **Close gripper** to grasp the object
 6. **Lift before moving laterally** — raise at least 0.10m above the table before horizontal moves
 7. **Lower to place** — move above target position, then lower to place height (on top of target = target_top_Z + held_object_half_height)
@@ -60,7 +60,12 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 ## Previous Steps Taken
 {history}
 
-Plan the NEXT phase to accomplish this task. Do NOT repeat a phase that was already done. If the task is already complete, respond with:
+Plan the NEXT phase to accomplish this task. Review the previous steps carefully:
+- If a previous pick-up FAILED (object didn't move), the grip likely missed. Re-attempt with corrected positions from the CURRENT scene state.
+- Do NOT say "Task already complete" unless the object is actually at the target position.
+- Do NOT repeat the exact same commands that already failed — adjust positions based on current scene state.
+
+If the task is genuinely already complete (verified by object positions), respond with:
 ```
 {
   "step_description": "Task already complete",

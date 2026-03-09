@@ -44,17 +44,33 @@ class TaskPlanner:
         bounds = workspace.get("bounds", [0.1, 0.9, -0.4, 0.4])
         surface_height = workspace.get("surface_height", 0.42)
 
-        # Build history summary
+        # Build history summary including failure reasons
         if history:
             history_lines = []
             for entry in history:
                 desc = entry.get("step_description", "unknown")
                 cmds = entry.get("commands", [])
+                phase = entry.get("phase", "")
+
+                if phase == "replanning":
+                    note = entry.get("note", "")
+                    history_lines.append(f"- ⚠️ FAILED: {note}")
+                    continue
+
                 cmd_summary = ", ".join(
                     c.get("type", "?") + (f" {c['position']}" if "position" in c else "")
                     for c in cmds
                 )
-                history_lines.append(f"- {desc}: [{cmd_summary}]")
+                line = f"- {desc}: [{cmd_summary}]"
+
+                # Include verification failure reason
+                verif = entry.get("verification", {})
+                if not verif.get("completed", True):
+                    reason = verif.get("reason", "")
+                    if reason:
+                        line += f" → FAILED: {reason}"
+
+                history_lines.append(line)
             history_text = "\n".join(history_lines)
         else:
             history_text = "None (this is the first step)"

@@ -123,14 +123,16 @@ class TaskExecutor:
                         "log": execution_log,
                     }
 
-                # Not actually done — tell planner to try again
-                logger.warning("Planner thinks done but verifier disagrees — retrying")
+                # Not actually done — inject failure context and retry
+                failure_reason = check.get("reason", "unknown")
+                logger.warning(f"Planner thinks done but verifier disagrees: {failure_reason}")
                 execution_log.append({
                     "iteration": iteration,
                     "phase": "replanning",
                     "step_description": step_desc,
                     "commands": [],
-                    "note": f"Planner returned no commands but task not complete: {check.get('reason')}",
+                    "note": f"Previous attempt failed: {failure_reason}. Must re-attempt the task.",
+                    "verification": check,
                 })
                 continue
 
