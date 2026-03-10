@@ -88,6 +88,14 @@ Default: `http://localhost:8200`
 {"status": "ok"}
 ```
 
+### GET /version
+
+Returns the service version (git commit hash and timestamp).
+
+```json
+{"service": "raserv", "commit": "65d890e", "committed": "2026-03-10 16:00:00 +0100"}
+```
+
 ### POST /task
 
 Execute a natural language task through the plan-execute-verify loop.
@@ -105,27 +113,26 @@ Execute a natural language task through the plan-execute-verify loop.
 {
   "status": "completed",
   "task": "put the blue box on top of the red one",
-  "iterations": 6,
+  "iterations": 3,
   "final_scene_state": { "arm": { ... }, "props": [ ... ] },
   "verification": {
     "completed": true,
-    "reason": "Blue box is stacked on top of the red box",
-    "confidence": 0.95
+    "reason": "green_box IS on top of red_box (a_bottom=0.4838, b_top=0.4819, xy_dist=0.0035)",
+    "confidence": 1.0
   },
-  "log": [
-    {
-      "iteration": 1,
-      "phase": "executed",
-      "step_description": "Open gripper and position above blue box",
-      "commands": [ ... ],
-      "results": [ ... ],
-      "verification": { "completed": false, "reason": "..." }
-    }
-  ]
+  "log": [ ... ]
 }
 ```
 
-**Status values:** `completed` | `max_iterations_reached` | `error`
+**Status values:** `completed` | `max_iterations_reached` | `safety_abort` | `cancelled` | `error`
+
+### POST /task/cancel
+
+Cancel the currently running task.
+
+### GET /task/status
+
+Check if a task is currently running.
 
 ## Architecture
 
@@ -155,6 +162,21 @@ User: "put the blue box on top of the red one"
 
 **Loop:** Get scene state → LLM plans next step → Execute on RASim → Get updated state → LLM verifies → Repeat until done.
 
+## Key Design Decisions
+
+### Programmatic Spatial Verification
+
+GPT-4o cannot reliably compare coordinate values or do spatial arithmetic. The verifier pre-computes all spatial relationships programmatically (stacking, ordering, fallen objects) and injects authoritative facts into the LLM prompt. The LLM only interprets whether these facts satisfy the task — it never does the math itself.
+
+This covers:
+- **Stacking** — `_compute_spatial_facts()` checks Z-alignment and XY proximity between all prop pairs
+- **Ordering** — Props are pre-sorted by each axis so the LLM can compare color sequences directly
+- **Safety** — Fallen/out-of-bounds detection is purely coordinate-based
+
+### Planner Failure Recovery
+
+The planner receives execution history including verification failure reasons. It tracks completed sub-goals and avoids repeating them. For stacking tasks, it recognizes that objects already on the table are valid bases and focuses on the next incomplete sub-goal.
+
 ## Project Structure
 
 ```
@@ -162,12 +184,12 @@ robot-arm-services/
 ├── src/
 │   ├── llm_adapter.py   # Abstract LLM provider + OpenAI implementation
 │   ├── planner.py       # LLM-based task planner (scene state → commands)
-│   ├── verifier.py      # LLM-based completion checker
-│   ├── executor.py      # Plan-execute-verify orchestration loop
-│   └── api.py           # FastAPI REST endpoints
+│   ├── verifier.py      # LLM-based completion checker with programmatic spatial analysis
+│   ├── executor.py      # Plan-execute-verify orchestration loop + safety checks
+│   └── api.py           # FastAPI REST endpoints (incl. /version)
 ├── prompts/
 │   ├── planner.txt      # System prompt: coordinate system, commands, planning rules
-│   └── verifier.txt     # System prompt: spatial verification rules
+│   └── verifier.txt     # System prompt: spatial verification rules, ordering checks
 ├── configs/
 │   └── settings.yaml    # RASim URL, LLM config, executor params
 ├── tests/

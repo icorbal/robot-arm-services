@@ -81,6 +81,9 @@ Plan the NEXT phase to accomplish this task. Review the previous steps carefully
 **Failure recovery:**
 - If a previous pick-up FAILED (object didn't move), the grip likely missed. Re-attempt with corrected positions from the CURRENT scene state.
 - Do NOT repeat the exact same commands that already failed — adjust positions based on current scene state.
+- **NEVER repeat the same step more than once.** If you already placed an object and it's at the correct position (e.g., red is on the table as the base), MOVE ON to the next sub-goal.
+- For stacking tasks: an object already on the table IS the base. Don't re-place it. Focus on stacking the next object on top.
+- If stacking failed (object fell off), re-attempt the STACK, not the base placement.
 
 If the task is genuinely already complete (verified by object positions), respond with:
 ```
