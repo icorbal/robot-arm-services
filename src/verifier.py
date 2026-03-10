@@ -98,6 +98,22 @@ def _compute_spatial_facts(scene_state: dict[str, Any]) -> str:
     if not found_stacks:
         lines.append("- No objects are stacked on each other.")
 
+    # Axis ordering (useful for arrangement/sorting tasks)
+    lines.append("\n### Axis Ordering")
+    for axis_name, axis_idx, direction in [
+        ("X-axis (left=low, right=high)", 0, 1),
+        ("Y-axis (left=high, right=low for viewer)", 1, -1),
+        ("Y-axis ascending", 1, 1),
+    ]:
+        sorted_props = sorted(props, key=lambda p: p.get("pos", [0,0,0])[axis_idx], reverse=(direction == -1))
+        order_str = " → ".join(
+            f"{p['color']}({p.get('pos',[0,0,0])[axis_idx]:.4f})"
+            for p in sorted_props
+        )
+        color_order = ", ".join(p["color"] for p in sorted_props)
+        lines.append(f"- {axis_name}: {order_str}")
+        lines.append(f"  Color order: [{color_order}]")
+
     # Check for fallen/out-of-bounds props
     x_min, x_max, y_min, y_max = bounds
     fallen = []

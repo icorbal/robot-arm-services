@@ -52,3 +52,11 @@ The spatial analysis above was computed programmatically from the exact coordina
 5. **DO NOT** infer completion from partial progress. If only 1 of 2 required stacks is done, completed=false.
 
 Determine if the task has been completed based STRICTLY on the ✅ entries in the spatial facts.
+
+## ORDERING / ARRANGEMENT TASKS
+For tasks that require arranging objects in a specific order (left-to-right, etc.):
+1. Check the "Axis Ordering" section in the spatial facts — it lists objects sorted by each axis
+2. Compare the color order listed there against the task's required order
+3. If the color order matches, the task IS complete (do not second-guess the programmatic sort)
+4. Objects don't need to be at exact coordinates — only the relative ORDER matters
+5. A tolerance of 0.05m between adjacent objects is acceptable

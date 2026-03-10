@@ -1,6 +1,8 @@
 """FastAPI REST endpoints for the robot arm services."""
 
 import logging
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -9,6 +11,34 @@ from pydantic import BaseModel, Field
 from .executor import TaskExecutor
 
 logger = logging.getLogger(__name__)
+
+
+def _get_git_version() -> dict[str, str]:
+    """Read git commit hash and timestamp at startup."""
+    repo_dir = Path(__file__).parent.parent
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        timestamp = subprocess.check_output(
+            ["git", "log", "-1", "--format=%ci"],
+            cwd=repo_dir, text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet"],
+            cwd=repo_dir, stderr=subprocess.DEVNULL,
+        ) != 0
+        return {
+            "service": "raserv",
+            "commit": commit + ("-dirty" if dirty else ""),
+            "committed": timestamp,
+        }
+    except Exception:
+        return {"service": "raserv", "commit": "unknown", "committed": "unknown"}
+
+
+_VERSION = _get_git_version()
 
 app = FastAPI(
     title="Robot Arm Services (RAServ)",
@@ -50,6 +80,12 @@ class HealthResponse(BaseModel):
 async def health():
     """Health check endpoint."""
     return HealthResponse(status="ok")
+
+
+@app.get("/version")
+async def version():
+    """Return service version (git commit)."""
+    return _VERSION
 
 
 @app.post("/task")
