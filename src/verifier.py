@@ -175,7 +175,6 @@ class TaskVerifier:
         system_prompt = (
             self._prompt_template
             .replace("{surface_height}", str(surface_height))
-            .replace("{scene_state}", json.dumps(scene_state, indent=2))
             .replace("{spatial_facts}", spatial_facts)
             .replace("{task}", task)
         )

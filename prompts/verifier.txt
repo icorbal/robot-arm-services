@@ -33,10 +33,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 }
 ```
 
-## Current Scene State (raw data)
-{scene_state}
-
-## Pre-Computed Spatial Analysis (TRUST THIS — computed programmatically, not by an LLM)
+## Spatial Analysis (computed programmatically — AUTHORITATIVE)
 {spatial_facts}
 
 ## Task to Verify

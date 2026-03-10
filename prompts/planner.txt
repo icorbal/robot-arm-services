@@ -68,27 +68,12 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 ## Task
 {task}
 
-## Previous Steps Taken
+## Previous Step Result
 {history}
 
-Plan the NEXT phase to accomplish this task. Review the previous steps carefully:
-
-**Sub-goal tracking (CRITICAL for multi-step tasks):**
-- Read the verification results from previous steps. If a verification says a sub-goal IS ALREADY COMPLETE (e.g., "green box is on top of blue box"), do NOT redo that sub-goal.
-- Move on to the NEXT incomplete sub-goal immediately.
-- Example: if verification says "green on blue ✅ but red not on green", your next step should be to pick up red — NOT to touch green again.
-
-**Failure recovery:**
-- If a previous pick-up FAILED (object didn't move), the grip likely missed. Re-attempt with corrected positions from the CURRENT scene state.
-- Do NOT repeat the exact same commands that already failed — adjust positions based on current scene state.
-- **NEVER repeat the same step more than once.** If you already placed an object and it's at the correct position (e.g., red is on the table as the base), MOVE ON to the next sub-goal.
-- For stacking tasks: an object already on the table IS the base. Don't re-place it. Focus on stacking the next object on top.
-- If stacking failed (object fell off), re-attempt the STACK, not the base placement.
-
-If the task is genuinely already complete (verified by object positions), respond with:
-```
-{
-  "step_description": "Task already complete",
-  "commands": []
-}
-```
+**Rules:**
+- The current scene state reflects ALL previous actions. Use it — don't guess from history.
+- If a sub-goal is already complete (object already in position), skip it and do the NEXT one.
+- If the last step failed, re-attempt with corrected positions from CURRENT scene state.
+- Never repeat the same step. Objects already on the table ARE the base for stacking — don't re-place them.
+- If task is already complete, return empty commands: `{"step_description": "Task complete", "commands": []}`

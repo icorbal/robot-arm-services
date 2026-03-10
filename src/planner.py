@@ -12,6 +12,32 @@ logger = logging.getLogger(__name__)
 PROMPT_DIR = Path(__file__).parent.parent / "prompts"
 
 
+def _slim_scene_state(state: dict) -> dict:
+    """Strip scene state to only what the LLM needs for planning.
+
+    Removes: arm joint positions, gripper rotation, workspace bounds
+    (those are already in the prompt template as named values).
+    """
+    arm = state.get("arm", {})
+    slim = {
+        "arm": {
+            "gripper_pos": arm.get("gripper_pos"),
+            "grip_open": arm.get("grip_open"),
+        },
+        "props": [
+            {
+                "id": p["id"],
+                "type": p["type"],
+                "color": p.get("color", ""),
+                "pos": p["pos"],
+                "size": p["size"],
+            }
+            for p in state.get("props", [])
+        ],
+    }
+    return slim
+
+
 class TaskPlanner:
     """Plans robot arm movements using an LLM."""
 
@@ -44,36 +70,27 @@ class TaskPlanner:
         bounds = workspace.get("bounds", [0.1, 0.9, -0.4, 0.4])
         surface_height = workspace.get("surface_height", 0.42)
 
-        # Build history summary including failure reasons
+        # Strip scene state to only what the LLM needs (saves ~30% tokens)
+        slim_state = _slim_scene_state(scene_state)
+
+        # Compress history: only keep last verification failure reason
+        # The current scene state IS the result of all previous actions —
+        # the LLM doesn't need the full command log.
+        history_text = "None (first step)"
         if history:
-            history_lines = []
-            for entry in history:
-                desc = entry.get("step_description", "unknown")
-                cmds = entry.get("commands", [])
-                phase = entry.get("phase", "")
-
-                if phase == "replanning":
-                    note = entry.get("note", "")
-                    history_lines.append(f"- ⚠️ FAILED: {note}")
-                    continue
-
-                cmd_summary = ", ".join(
-                    c.get("type", "?") + (f" {c['position']}" if "position" in c else "")
-                    for c in cmds
-                )
-                line = f"- {desc}: [{cmd_summary}]"
-
-                # Include verification failure reason
+            # Find last verification failure
+            for entry in reversed(history):
                 verif = entry.get("verification", {})
                 if not verif.get("completed", True):
                     reason = verif.get("reason", "")
+                    desc = entry.get("step_description", "")
                     if reason:
-                        line += f" → FAILED: {reason}"
-
-                history_lines.append(line)
-            history_text = "\n".join(history_lines)
-        else:
-            history_text = "None (this is the first step)"
+                        history_text = f"Last attempt: {desc} → {reason}"
+                    break
+                elif verif.get("completed"):
+                    # Last step succeeded — note completed sub-goals
+                    history_text = f"Completed so far: {verif.get('reason', '')}"
+                    break
 
         system_prompt = (
             self._prompt_template
@@ -82,7 +99,7 @@ class TaskPlanner:
             .replace("{x_max}", str(bounds[1]))
             .replace("{y_min}", str(bounds[2]))
             .replace("{y_max}", str(bounds[3]))
-            .replace("{scene_state}", json.dumps(scene_state, indent=2))
+            .replace("{scene_state}", json.dumps(slim_state, indent=2))
             .replace("{task}", task)
             .replace("{history}", history_text)
         )
