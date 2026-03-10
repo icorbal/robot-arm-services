@@ -1,5 +1,6 @@
 """LLM provider abstraction with OpenAI implementation."""
 
+import base64
 import json
 import logging
 import os
@@ -15,12 +16,18 @@ class LLMAdapter(ABC):
     """Abstract base class for LLM providers."""
 
     @abstractmethod
-    async def generate(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        images: list[bytes] | None = None,
+    ) -> dict[str, Any]:
         """Generate a JSON response from the LLM.
 
         Args:
             system_prompt: System/instruction prompt
             user_prompt: User message
+            images: Optional list of PNG image bytes to include as vision input.
 
         Returns:
             Parsed JSON response from the LLM
@@ -47,18 +54,43 @@ class OpenAIAdapter(LLMAdapter):
         self._model = model
         logger.info(f"OpenAI adapter initialized with model: {model}")
 
-    async def generate(self, system_prompt: str, user_prompt: str) -> dict[str, Any]:
-        """Generate a JSON response using OpenAI API."""
+    async def generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        images: list[bytes] | None = None,
+    ) -> dict[str, Any]:
+        """Generate a JSON response using OpenAI API.
+
+        When images are provided, they are encoded as base64 data URLs and
+        included in the user message content blocks (vision API format).
+        """
         logger.debug(f"Generating response with {self._model}")
         logger.debug(f"System prompt length: {len(system_prompt)}")
         logger.debug(f"User prompt length: {len(user_prompt)}")
+
+        # Build user content: text-only or multimodal (text + images)
+        if images:
+            logger.debug(f"Including {len(images)} image(s) in request")
+            user_content: list[dict[str, Any]] = [
+                {"type": "text", "text": user_prompt},
+            ]
+            for img_bytes in images:
+                b64 = base64.b64encode(img_bytes).decode("ascii")
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{b64}"},
+                })
+            user_message: dict[str, Any] = {"role": "user", "content": user_content}
+        else:
+            user_message = {"role": "user", "content": user_prompt}
 
         try:
             response = await self._client.chat.completions.create(
                 model=self._model,
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
+                    user_message,
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.2,

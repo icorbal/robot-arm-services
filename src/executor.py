@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from .perception import StereoPerceiver
 from .planner import TaskPlanner
 from .verifier import TaskVerifier
 
@@ -22,18 +23,23 @@ class TaskExecutor:
         rasim_url: str = "http://localhost:8100",
         max_iterations: int = 10,
         step_delay: float = 0.5,
+        perception_mode: str = "scene_state",
+        perceiver: StereoPerceiver | None = None,
     ):
         self._planner = planner
         self._verifier = verifier
         self._rasim_url = rasim_url.rstrip("/")
         self._max_iterations = max_iterations
         self._step_delay = step_delay
+        self._perception_mode = perception_mode
+        self._perceiver = perceiver
         self._client = httpx.AsyncClient(timeout=10.0)
         self._cancel_event: asyncio.Event | None = None
         self._running = False
         logger.info(
             f"TaskExecutor initialized (rasim={rasim_url}, "
-            f"max_iter={max_iterations}, delay={step_delay}s)"
+            f"max_iter={max_iterations}, delay={step_delay}s, "
+            f"perception={perception_mode})"
         )
 
     @property
@@ -91,10 +97,24 @@ class TaskExecutor:
         return fallen
 
     async def _get_scene_state(self) -> dict[str, Any]:
-        """Fetch current scene state from RASim."""
+        """Fetch current scene state from RASim (or via stereo perception)."""
+        if self._perception_mode == "camera" and self._perceiver is not None:
+            logger.info("Perceiving scene via stereo cameras")
+            return await self._perceiver.perceive(self._rasim_url)
+        # Default: direct JSON scene state
         response = await self._client.get(f"{self._rasim_url}/scene-state")
         response.raise_for_status()
         return response.json()
+
+    async def _get_camera_images(self) -> list[bytes] | None:
+        """Get stereo camera images for visual verification (camera mode only)."""
+        if self._perception_mode == "camera" and self._perceiver is not None:
+            try:
+                left, right = await self._perceiver.get_camera_images(self._rasim_url)
+                return [left, right]
+            except Exception as e:
+                logger.warning(f"Failed to get camera images for verification: {e}")
+        return None
 
     async def _execute_commands(self, commands: list[dict]) -> dict[str, Any]:
         """Send commands to RASim for execution."""
@@ -183,7 +203,8 @@ class TaskExecutor:
             if not commands:
                 logger.info("Planner returned no commands — verifying before stopping")
                 try:
-                    check = await self._verifier.verify(scene_state, task)
+                    verify_images = await self._get_camera_images()
+                    check = await self._verifier.verify(scene_state, task, images=verify_images)
                 except Exception as e:
                     check = {"completed": False, "reason": str(e), "confidence": 0.0}
 
@@ -270,7 +291,8 @@ class TaskExecutor:
 
             # 5. Verify task completion
             try:
-                verification = await self._verifier.verify(updated_state, task)
+                verify_images = await self._get_camera_images()
+                verification = await self._verifier.verify(updated_state, task, images=verify_images)
             except Exception as e:
                 logger.warning(f"Verification failed: {e}")
                 verification = {"completed": False, "reason": f"Verification error: {e}", "confidence": 0.0}

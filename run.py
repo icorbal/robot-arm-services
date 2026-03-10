@@ -12,6 +12,7 @@ import yaml
 from src.api import app, set_executor
 from src.executor import TaskExecutor
 from src.llm_adapter import create_llm_adapter
+from src.perception import StereoPerceiver
 from src.planner import TaskPlanner
 from src.verifier import TaskVerifier
 
@@ -83,9 +84,33 @@ def main() -> None:
         logger.error(f"Failed to create LLM adapter: {e}")
         sys.exit(1)
 
-    # Create planner and verifier
-    planner = TaskPlanner(llm)
-    verifier = TaskVerifier(llm)
+    # Read perception config
+    perception_config = settings.get("perception", {})
+    perception_mode = perception_config.get("mode", "scene_state")
+    image_width = perception_config.get("image_width", 640)
+    image_height = perception_config.get("image_height", 480)
+    logger.info(f"Perception mode: {perception_mode}")
+
+    # Create planner and verifier (use camera-specific prompts when applicable)
+    prompts_dir = Path(__file__).parent / "prompts"
+    if perception_mode == "camera":
+        planner_prompt = prompts_dir / "planner_camera.txt"
+        verifier_prompt = prompts_dir / "verifier_camera.txt"
+    else:
+        planner_prompt = prompts_dir / "planner.txt"
+        verifier_prompt = prompts_dir / "verifier.txt"
+
+    planner = TaskPlanner(llm, prompt_path=planner_prompt)
+    verifier = TaskVerifier(llm, prompt_path=verifier_prompt)
+
+    # Create perceiver if in camera mode
+    perceiver = None
+    if perception_mode == "camera":
+        perceiver = StereoPerceiver(
+            llm=llm,
+            image_width=image_width,
+            image_height=image_height,
+        )
 
     # Create executor
     exec_config = settings.get("executor", {})
@@ -96,6 +121,8 @@ def main() -> None:
         rasim_url=rasim_config.get("url", "http://localhost:8100"),
         max_iterations=exec_config.get("max_iterations", 10),
         step_delay=exec_config.get("step_delay", 0.5),
+        perception_mode=perception_mode,
+        perceiver=perceiver,
     )
     set_executor(executor)
 

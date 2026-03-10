@@ -1,0 +1,45 @@
+You are analyzing stereo camera images from a robot arm. Two cameras ("left eye" and "right eye") are mounted on the robot's end-effector, looking down at a table with colored objects.
+
+## Image Details
+- Resolution: {width} x {height} pixels
+- First image: LEFT camera
+- Second image: RIGHT camera
+- The cameras have a ~4cm baseline (horizontal separation)
+- Objects are colored geometric shapes: boxes, cylinders, spheres
+
+## Your Task
+Identify ALL objects visible on the table surface. For EACH object, provide:
+1. A descriptive ID (e.g., "red_box", "blue_cylinder")
+2. The object's color (e.g., "red", "blue", "green", "yellow")
+3. The object type (box, cylinder, sphere)
+4. The pixel coordinates of the object's CENTER in the LEFT image: [u, v]
+5. The pixel coordinates of the object's CENTER in the RIGHT image: [u, v]
+
+## Pixel Coordinate Rules
+- Origin (0, 0) is the TOP-LEFT corner of the image
+- u increases rightward (0 to {width})
+- v increases downward (0 to {height})
+- Estimate the CENTER of each object, not an edge or corner
+- Be as precise as possible — even a few pixels matter for 3D accuracy
+
+## Output Format
+Return ONLY valid JSON:
+```json
+{
+  "objects": [
+    {
+      "id": "red_box",
+      "color": "red",
+      "type": "box",
+      "left_px": [320, 240],
+      "right_px": [325, 240]
+    }
+  ]
+}
+```
+
+## Important
+- Do NOT estimate distances, sizes, or 3D positions — only pixel coordinates.
+- Include every distinct object you can see.
+- If an object is partially occluded, still include it with your best estimate of its center.
+- The same object appears in both images at slightly different horizontal positions (stereo parallax). Match objects across images by color and type.

@@ -9,3 +9,8 @@ llm:
 executor:
   max_iterations: 10
   step_delay: 0.5
+
+perception:
+  mode: "camera"  # "camera" for stereo vision, "scene_state" for JSON (legacy)
+  image_width: 640
+  image_height: 480

@@ -151,7 +151,8 @@ class TaskVerifier:
             return f.read()
 
     async def verify(
-        self, scene_state: dict[str, Any], task: str
+        self, scene_state: dict[str, Any], task: str,
+        images: list[bytes] | None = None,
     ) -> dict[str, Any]:
         """Verify if the task has been completed.
 
@@ -161,6 +162,7 @@ class TaskVerifier:
         Args:
             scene_state: Current scene state from RASim
             task: Original task description
+            images: Optional stereo camera images for visual verification
 
         Returns:
             Dict with "completed" (bool), "reason" (str), "confidence" (float)
@@ -179,10 +181,15 @@ class TaskVerifier:
             .replace("{task}", task)
         )
 
+        user_msg = f"Is this task complete? {task}"
+        if images:
+            user_msg += "\n\nAttached: stereo camera images (left eye, right eye) for visual confirmation."
+
         logger.info(f"Verifying task completion: {task}")
         result = await self._llm.generate(
             system_prompt=system_prompt,
-            user_prompt=f"Is this task complete? {task}",
+            user_prompt=user_msg,
+            images=images,
         )
 
         completed = result.get("completed", False)
