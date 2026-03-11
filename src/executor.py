@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from .perception import StereoPerceiver, triangulate_point
+from .perception import StereoPerceiver
 from .planner import TaskPlanner
 from .verifier import TaskVerifier
 

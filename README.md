@@ -6,24 +6,25 @@ LLM-powered task planner and executor for robot arm control. Part of the Robot A
 
 Accepts natural language tasks (e.g., "put the blue box on top of the red one"), plans gripper movements via an LLM, executes them on RASim, and verifies completion — all in an automated loop.
 
-**Stage 1a** (current): Uses scene state data directly from the simulator (no camera/vision pipeline).
+**Stages:**
+- **1a:** Scene state perception + planning + execution (complete)
+- **1b:** Stereo camera vision with LLM-based perception (current)
 
 ## Quick Start
 
 ```bash
-# Clone and set up
 git clone https://github.com/icorbal/robot-arm-services.git
 cd robot-arm-services
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Configure (copy and edit)
+# Configure
 cp .env.example .env
 # Edit .env with your OpenAI API key
 
 # Start RASim first (separate terminal)
-cd ../robot-arm-sim && python run.py
+cd ../robot-arm-sim && MUJOCO_GL=egl python run.py
 
 # Start RAServ
 source .env && python run.py
@@ -33,7 +34,7 @@ source .env && python run.py
 
 - Python 3.11+
 - [RASim](https://github.com/icorbal/robot-arm-sim) running (default: `http://localhost:8100`)
-- OpenAI API key with access to gpt-4o (or your configured model)
+- OpenAI API key (GPT-5.4 recommended for camera perception; GPT-4o works for scene-state mode)
 
 ## Configuration
 
@@ -41,37 +42,42 @@ source .env && python run.py
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key for the LLM planner/verifier |
+| `OPENAI_API_KEY` | Yes | OpenAI API key |
 
-**Never commit API keys.** Use environment variables or a `.env` file (gitignored).
+**Never commit API keys.** Use environment variables or `.env` (gitignored).
 
-### Settings File
-
-Edit `configs/settings.yaml`:
+### Settings (`configs/settings.yaml`)
 
 ```yaml
 rasim:
-  url: "http://localhost:8100"   # RASim endpoint
+  url: "http://localhost:8100"
 llm:
-  provider: "openai"             # LLM provider (currently: openai)
-  model: "gpt-4o"                # Model to use
-  api_key_env: "OPENAI_API_KEY"  # Env var name for the API key
+  provider: "openai"
+  model: "gpt-4o"
+  api_key_env: "OPENAI_API_KEY"
 executor:
-  max_iterations: 10             # Max plan-execute-verify loops
-  step_delay: 0.5                # Seconds between steps
+  max_iterations: 10
+  step_delay: 0.5
+perception:
+  mode: "scene_state"  # "scene_state" | "camera"
 ```
 
-## Usage
+## REST API
 
-```bash
-# Default (port 8200)
-python run.py
+Default: `http://localhost:8200`
 
-# Custom config
-python run.py --port 8200 --config configs/settings.yaml --log-level DEBUG
-```
+### Core Endpoints
 
-### Sending a task
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check |
+| GET | `/version` | Git commit + timestamp |
+| POST | `/task` | Execute a natural language task |
+| POST | `/task/cancel` | Cancel running task |
+| GET | `/task/status` | Check if a task is running |
+| GET | `/snapshot` | On-demand stereo perception snapshot |
+
+### POST /task
 
 ```bash
 curl -X POST http://localhost:8200/task \
@@ -79,60 +85,13 @@ curl -X POST http://localhost:8200/task \
   -d '{"prompt": "put the blue box on top of the red one"}'
 ```
 
-## REST API
+**Status values:** `completed` | `max_iterations_reached` | `safety_abort` | `interaction_zone_violation` | `cancelled` | `error`
 
-Default: `http://localhost:8200`
+### GET /snapshot
 
-### GET /health
-```json
-{"status": "ok"}
-```
+On-demand stereo perception at the current arm position (does **not** move the arm). Use for mid-task situation assessment.
 
-### GET /version
-
-Returns the service version (git commit hash and timestamp).
-
-```json
-{"service": "raserv", "commit": "65d890e", "committed": "2026-03-10 16:00:00 +0100"}
-```
-
-### POST /task
-
-Execute a natural language task through the plan-execute-verify loop.
-
-**Request:**
-```json
-{
-  "prompt": "put the blue box on top of the red one",
-  "max_iterations": 10
-}
-```
-
-**Response:**
-```json
-{
-  "status": "completed",
-  "task": "put the blue box on top of the red one",
-  "iterations": 3,
-  "final_scene_state": { "arm": { ... }, "props": [ ... ] },
-  "verification": {
-    "completed": true,
-    "reason": "green_box IS on top of red_box (a_bottom=0.4838, b_top=0.4819, xy_dist=0.0035)",
-    "confidence": 1.0
-  },
-  "log": [ ... ]
-}
-```
-
-**Status values:** `completed` | `max_iterations_reached` | `safety_abort` | `cancelled` | `error`
-
-### POST /task/cancel
-
-Cancel the currently running task.
-
-### GET /task/status
-
-Check if a task is currently running.
+Returns: stereo images (base64), camera params, scene state, interaction zone check.
 
 ## Architecture
 
@@ -140,107 +99,122 @@ Check if a task is currently running.
 User: "put the blue box on top of the red one"
                     │
                     ▼
-            ┌──────────────┐
-            │    RAServ     │
-            │              │
-            │  ┌─────────┐ │    GET /scene-state     ┌──────────┐
-            │  │ Planner  │ │ ◄─────────────────────► │  RASim   │
-            │  └─────────┘ │                          │ (MuJoCo) │
-            │       │      │    POST /execute          │          │
-            │       ▼      │ ─────────────────────►   │          │
-            │  ┌─────────┐ │                          └──────────┘
-            │  │Verifier │ │
-            │  └─────────┘ │
-            │       │      │
+            ┌───────────────┐
+            │    RAServ      │
+            │               │
+            │  ┌──────────┐ │
+            │  │ Perceiver │ │  stereo images / scene state
+            │  └──────────┘ │ ◄──────────────────────────► ┌──────────┐
+            │       │       │                               │  RASim   │
+            │  ┌──────────┐ │  POST /execute                │ (MuJoCo) │
+            │  │ Planner  │ │ ────────────────────────────► │          │
+            │  └──────────┘ │                               │          │
+            │       │       │  GET /interaction-zone/check  │          │
+            │  ┌──────────┐ │ ◄────────────────────────────►│          │
+            │  │ Verifier │ │                               └──────────┘
+            │  └──────────┘ │
+            │       │       │
             │   done? ──no──► loop
-            │       │      │
-            │      yes     │
-            └──────┼───────┘
-                   ▼
+            │       │       │
+            │      yes      │
+            └───────┼───────┘
+                    ▼
               Result + Log
 ```
 
-**Loop:** Get scene state → LLM plans next step → Execute on RASim → Get updated state → LLM verifies → Repeat until done.
+### Execution Loop
+
+1. **Pre-flight** — Verify all props are in the interaction zone
+2. **Perceive** — Get scene state (direct JSON or stereo camera + LLM)
+3. **Plan** — LLM plans next step given scene + task + history
+4. **Execute** — Send commands to RASim
+5. **Safety checks:**
+   - Props fallen off table → `safety_abort`
+   - Props outside interaction zone → `interaction_zone_violation`
+6. **Verify** — LLM checks task completion
+7. **Loop** or return result
+
+### Perception Modes
+
+| Mode | Source | Accuracy | Cost |
+|------|--------|----------|------|
+| `scene_state` | RASim JSON (ground truth) | Perfect | Free |
+| `camera` | Stereo images → LLM → triangulation | 1-3cm (GPT-5.4) | API calls |
+
+**Camera perception pipeline:**
+- Stereo images captured from gripper-mounted cameras (20cm baseline, 60° FOV)
+- LLM (GPT-5.4) identifies objects, matches across views, estimates pixel coordinates
+- DLT triangulation computes 3D world positions from stereo correspondences
+- LLM also provides: orientation assessment, grip strategy, spatial relationships
+
+**On-demand snapshots** can be taken at any point during execution via `GET /snapshot` — the arm does not need to move to the observation pose.
+
+## Safety Systems
+
+### Interaction Zone
+The interaction zone is a rectangular area on the table visible by **both** stereo cameras and reachable by the arm. It's enforced at three levels:
+
+1. **Scene loading** — RASim rejects props outside the zone
+2. **Pre-flight** — Executor verifies all props before starting a task
+3. **Post-step** — Executor checks after every command execution
+
+### Fallen Object Detection
+Coordinate-based check after each step. Objects below the table surface or outside workspace bounds trigger an immediate abort.
 
 ## Key Design Decisions
 
 ### Programmatic Spatial Verification
+The verifier pre-computes spatial relationships (stacking, ordering, distances) programmatically and injects them as authoritative facts into the LLM prompt. The LLM interprets whether facts satisfy the task — it never does coordinate math.
 
-GPT-4o cannot reliably compare coordinate values or do spatial arithmetic. The verifier pre-computes all spatial relationships programmatically (stacking, ordering, fallen objects) and injects authoritative facts into the LLM prompt. The LLM only interprets whether these facts satisfy the task — it never does the math itself.
-
-This covers:
-- **Stacking** — `_compute_spatial_facts()` checks Z-alignment and XY proximity between all prop pairs
-- **Ordering** — Props are pre-sorted by each axis so the LLM can compare color sequences directly
-- **Safety** — Fallen/out-of-bounds detection is purely coordinate-based
-
-### Planner Failure Recovery
-
-The planner receives execution history including verification failure reasons. It tracks completed sub-goals and avoids repeating them. For stacking tasks, it recognizes that objects already on the table are valid bases and focuses on the next incomplete sub-goal.
+### LLM Pixel Detection (Camera Mode)
+GPT-5.4 achieves ~14px pixel accuracy at 1024×768 resolution, yielding 1-2cm triangulation accuracy with a 20cm stereo baseline. Side-by-side composite images work best — the LLM sees both views in one image and handles object matching, orientation assessment, and grip strategy without any color-based heuristics.
 
 ## Project Structure
 
 ```
 robot-arm-services/
 ├── src/
-│   ├── llm_adapter.py   # Abstract LLM provider + OpenAI implementation
-│   ├── planner.py       # LLM-based task planner (scene state → commands)
-│   ├── verifier.py      # LLM-based completion checker with programmatic spatial analysis
-│   ├── executor.py      # Plan-execute-verify orchestration loop + safety checks
-│   └── api.py           # FastAPI REST endpoints (incl. /version)
+│   ├── llm_adapter.py          # Abstract LLM provider + OpenAI implementation
+│   ├── planner.py              # LLM task planner (scene → commands)
+│   ├── verifier.py             # LLM completion checker + spatial analysis
+│   ├── executor.py             # Plan-execute-verify loop + safety + IZ checks
+│   ├── perception.py           # Stereo perception: LLM detection + DLT triangulation
+│   ├── perception_cv.py        # CV color segmentation fallback
+│   ├── perception_multiview.py # Multi-view perception (arm repositioning)
+│   └── api.py                  # FastAPI REST endpoints
 ├── prompts/
-│   ├── planner.txt      # System prompt: coordinate system, commands, planning rules
-│   └── verifier.txt     # System prompt: spatial verification rules, ordering checks
+│   ├── planner.txt
+│   ├── verifier.txt
+│   └── perceiver.txt
 ├── configs/
-│   └── settings.yaml    # RASim URL, LLM config, executor params
+│   └── settings.yaml
 ├── tests/
-│   ├── test_integration.py  # Unit tests (mocked LLM + mocked RASim)
-│   └── test_e2e.py          # E2e test (mocked LLM + real MuJoCo physics)
-├── .env.example         # Template for environment variables
-├── run.py               # Entry point
+│   ├── test_triangulation.py        # DLT triangulation math (4 tests)
+│   ├── test_integration.py          # Unit tests (mocked LLM + RASim)
+│   ├── test_e2e.py                  # E2e (mocked LLM + real MuJoCo)
+│   ├── test_stereo_investigation.py # FOV/resolution/noise analysis
+│   ├── test_baseline_sweep.py       # Baseline vs accuracy sweep
+│   ├── test_llm_pixel_gpt54.py      # GPT-5.4 vs GPT-4o comparison
+│   ├── test_gpt54_sweep.py          # Multi-config prompt/resolution sweep
+│   ├── test_gpt54_full_perception.py # Full perception (orient, grip, stacking)
+│   └── test_interaction_space.py    # Camera frustum intersection computation
+├── .env.example
+├── run.py
 └── requirements.txt
 ```
 
 ## Tests
 
 ```bash
-# Run all tests (unit + e2e)
-python -m pytest tests/ -v
+# Core tests (no API key needed)
+python -m pytest tests/test_triangulation.py tests/test_integration.py -v
 
-# Unit tests only (no external dependencies)
-python -m pytest tests/test_integration.py -v
-
-# E2e test (requires RASim's venv with MuJoCo installed)
+# E2e (requires RASim's MuJoCo)
 python -m pytest tests/test_e2e.py -v -s
+
+# Stereo vision tests (requires running RASim + OPENAI_API_KEY)
+python tests/test_gpt54_full_perception.py
 ```
-
-### Test Coverage
-
-- **Unit tests (6):** Planner, verifier, and executor with fully mocked dependencies
-- **E2e tests (2):** Starts RASim as a subprocess with real MuJoCo physics, runs the executor with a deterministic mock LLM, verifies the blue box actually ends up stacked on the red box
-
-All tests run in ~2 seconds on a Raspberry Pi 5.
-
-## LLM Adapter
-
-The LLM adapter is designed for easy extension:
-
-```python
-from src.llm_adapter import LLMAdapter
-
-class MyCustomAdapter(LLMAdapter):
-    async def generate(self, system_prompt: str, user_prompt: str) -> dict:
-        # Your implementation — must return parsed JSON
-        ...
-
-    async def close(self) -> None:
-        ...
-```
-
-Register new providers in `create_llm_adapter()` in `llm_adapter.py`.
-
-## Prompts
-
-System prompts in `prompts/` use template variables (`{surface_height}`, `{scene_state}`, etc.) that are filled at runtime from the actual scene configuration. Edit these to tune LLM behavior.
 
 ## License
 
