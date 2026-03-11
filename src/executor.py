@@ -166,21 +166,28 @@ class TaskExecutor:
         return fallen
 
     async def _get_scene_state(
-        self, target_objects: list[dict[str, Any]] | None = None,
+        self, refined: bool = False,
+        target_objects: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Fetch current scene state from RASim (or via two-phase perception).
+        """Fetch current scene state from RASim (or via camera perception).
 
         Args:
-            target_objects: Optional list of objects to refine with targeted
-                close-ups. Each dict has 'id' and 'description'. If None
-                and camera mode is active, ALL objects are refined.
+            refined: If True, use two-phase perception (Phase 1 scan +
+                Phase 2 targeted close-ups). If False (default), use only
+                Phase 1 scan for a quick overview.
+            target_objects: When refined=True, optionally limit Phase 2 to
+                specific objects. Each dict has 'id' and 'description'.
         """
         if self._perception_mode == "camera" and self._perceiver is not None:
-            logger.info("Perceiving scene via two-phase camera pipeline")
-            return await self._perceiver.perceive_two_phase(
-                self._rasim_url,
-                target_objects=target_objects,
-            )
+            if refined:
+                logger.info("Perceiving scene via two-phase camera pipeline (refined)")
+                return await self._perceiver.perceive_two_phase(
+                    self._rasim_url,
+                    target_objects=target_objects,
+                )
+            else:
+                logger.info("Perceiving scene via single-scan camera pipeline")
+                return await self._perceiver.perceive(self._rasim_url)
         # Default: direct JSON scene state
         response = await self._client.get(f"{self._rasim_url}/scene-state")
         response.raise_for_status()
@@ -195,6 +202,149 @@ class TaskExecutor:
             except Exception as e:
                 logger.warning(f"Failed to get camera images for verification: {e}")
         return None
+
+    async def _verify_grab(
+        self,
+        target_id: str,
+        target_description: str,
+        pre_grab_pos: list[float],
+    ) -> dict[str, Any]:
+        """Verify that an object was successfully grabbed after grip_close.
+
+        Observes the scene and checks whether the target object is still at
+        its previous position (grab missed) or has moved with the gripper
+        (grab succeeded).
+
+        Args:
+            target_id: ID of the object we tried to grab.
+            target_description: e.g. "red box" for logging.
+            pre_grab_pos: Object position before the grab attempt.
+
+        Returns:
+            Dict with 'grabbed' (bool) and 'details'.
+        """
+        if self._perception_mode != "camera" or self._perceiver is None:
+            # Without camera perception, assume grab succeeded
+            return {"grabbed": True, "details": "no camera verification available"}
+
+        logger.info(f"Verifying grab of '{target_id}' ({target_description})")
+
+        # Do a targeted observation focused on where the object was
+        refined = await self._perceiver.perceive_targeted(
+            self._rasim_url,
+            pre_grab_pos,
+            target_description,
+        )
+
+        if refined is None:
+            # Object not found at previous location — likely grabbed
+            logger.info(f"Grab verification: '{target_id}' not found at "
+                        f"previous position — likely grabbed ✅")
+            return {"grabbed": True, "details": "object not visible at previous position"}
+
+        import numpy as np
+        dist = np.linalg.norm(
+            np.array(refined["pos"]) - np.array(pre_grab_pos)
+        )
+
+        if dist < 0.03:
+            # Object still at same position — grab missed
+            logger.warning(
+                f"Grab verification FAILED: '{target_id}' still at "
+                f"[{refined['pos'][0]:.3f}, {refined['pos'][1]:.3f}, "
+                f"{refined['pos'][2]:.3f}] (moved {dist*100:.1f}cm) ❌"
+            )
+            return {
+                "grabbed": False,
+                "details": f"object still at original position (moved only {dist*100:.1f}cm)",
+                "refined_pos": refined["pos"],
+            }
+        else:
+            # Object moved significantly — grab succeeded
+            logger.info(
+                f"Grab verification: '{target_id}' moved {dist*100:.1f}cm "
+                f"from previous position — grab confirmed ✅"
+            )
+            return {"grabbed": True, "details": f"object moved {dist*100:.1f}cm"}
+
+    async def _check_grab_in_commands(
+        self,
+        commands: list[dict],
+        scene_state: dict[str, Any],
+        execution_log: list[dict],
+        iteration: int,
+    ) -> bool | None:
+        """Check if a grip_close in the command sequence actually grabbed an object.
+
+        Looks for a grip_close command preceded by a move_to, finds the
+        closest object to that move_to position, and verifies the grab.
+
+        Returns:
+            True if grab confirmed, False if grab failed, None if no
+            grip_close in commands.
+        """
+        # Find grip_close and the preceding move_to
+        grip_idx = None
+        for i, cmd in enumerate(commands):
+            if cmd.get("type") == "grip_close":
+                grip_idx = i
+                break
+
+        if grip_idx is None:
+            return None  # No grab in this step
+
+        # Find the last move_to before grip_close to determine target position
+        grab_pos = None
+        for i in range(grip_idx - 1, -1, -1):
+            if commands[i].get("type") == "move_to":
+                grab_pos = commands[i].get("position")
+                break
+
+        if grab_pos is None:
+            return None  # Can't determine grab location
+
+        # Find closest object to grab position
+        import numpy as np
+        props = scene_state.get("props", [])
+        best_id = None
+        best_dist = float("inf")
+        best_pos = None
+        best_desc = None
+        for p in props:
+            d = np.linalg.norm(np.array(p["pos"][:2]) - np.array(grab_pos[:2]))
+            if d < best_dist:
+                best_dist = d
+                best_id = p["id"]
+                best_pos = p["pos"]
+                best_desc = f"{p.get('color', '')} {p.get('type', 'object')}".strip()
+
+        if best_id is None or best_dist > 0.10:
+            logger.warning(f"No object near grab position {grab_pos}")
+            return None
+
+        logger.info(f"Grab target: '{best_id}' ({best_desc}) at "
+                    f"[{best_pos[0]:.3f}, {best_pos[1]:.3f}, {best_pos[2]:.3f}]")
+
+        # Verify the grab
+        result = await self._verify_grab(best_id, best_desc, best_pos)
+
+        if not result["grabbed"]:
+            # Inject failure context for replanning
+            execution_log.append({
+                "iteration": iteration,
+                "phase": "grab_failed",
+                "target_id": best_id,
+                "target_description": best_desc,
+                "details": result["details"],
+                "refined_pos": result.get("refined_pos"),
+                "note": (
+                    f"Grab of '{best_id}' failed — object still at original "
+                    f"position. Need to re-perceive and retry."
+                ),
+            })
+            return False
+
+        return True
 
     async def _execute_commands(self, commands: list[dict]) -> dict[str, Any]:
         """Send commands to RASim for execution."""
@@ -247,6 +397,8 @@ class TaskExecutor:
                 "log": execution_log,
             }
 
+        use_refined_next = False  # Escalate to two-phase on failure
+
         for iteration in range(1, self._max_iterations + 1):
             logger.info(f"--- Iteration {iteration}/{self._max_iterations} ---")
 
@@ -260,9 +412,10 @@ class TaskExecutor:
                     "log": execution_log,
                 }
 
-            # 1. Get scene state
+            # 1. Get scene state (use refined if previous iteration failed)
             try:
-                scene_state = await self._get_scene_state()
+                scene_state = await self._get_scene_state(refined=use_refined_next)
+                use_refined_next = False  # Reset after use
             except httpx.HTTPError as e:
                 error_msg = f"Failed to get scene state: {e}"
                 logger.error(error_msg)
@@ -316,9 +469,10 @@ class TaskExecutor:
                         "log": execution_log,
                     }
 
-                # Not actually done — inject failure context and retry
+                # Not actually done — inject failure context and retry with refined perception
                 failure_reason = check.get("reason", "unknown")
                 logger.warning(f"Planner thinks done but verifier disagrees: {failure_reason}")
+                use_refined_next = True
                 execution_log.append({
                     "iteration": iteration,
                     "phase": "replanning",
@@ -358,12 +512,28 @@ class TaskExecutor:
                 "results": exec_result.get("results", []),
             })
 
+            # 3b. Grab verification: after grip_close, check if we
+            # actually got the object.  If not, re-perceive with
+            # targeted close-up and inject failure context for replanning.
+            grab_failed = False
+            if self._perception_mode == "camera" and self._perceiver is not None:
+                grab_verified = await self._check_grab_in_commands(
+                    commands, scene_state, execution_log, iteration
+                )
+                if grab_verified is False:
+                    grab_failed = True
+
             # 4. Get updated scene state
             try:
-                updated_state = await self._get_scene_state()
+                # Use refined perception if grab failed (need accurate re-perception)
+                updated_state = await self._get_scene_state(refined=grab_failed)
             except httpx.HTTPError as e:
                 logger.error(f"Failed to get updated scene state: {e}")
                 updated_state = exec_result.get("scene_state", scene_state)
+
+            if grab_failed:
+                # Skip verification — force replanning with refined positions
+                continue
 
             # 4b. Safety check: abort if any prop fell off the table
             fallen = self._check_fallen_props(updated_state)
@@ -431,6 +601,9 @@ class TaskExecutor:
                     "verification": verification,
                     "log": execution_log,
                 }
+
+            # Task not complete yet — escalate to refined perception for next attempt
+            use_refined_next = True
 
             # Check for cancellation before next iteration
             if self._cancel_event and self._cancel_event.is_set():
