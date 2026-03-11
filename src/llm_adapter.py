@@ -94,7 +94,7 @@ class OpenAIAdapter(LLMAdapter):
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.2,
-                max_tokens=2048,
+                max_completion_tokens=2048,
             )
 
             content = response.choices[0].message.content

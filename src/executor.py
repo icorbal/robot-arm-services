@@ -165,11 +165,22 @@ class TaskExecutor:
 
         return fallen
 
-    async def _get_scene_state(self) -> dict[str, Any]:
-        """Fetch current scene state from RASim (or via stereo perception)."""
+    async def _get_scene_state(
+        self, target_objects: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Fetch current scene state from RASim (or via two-phase perception).
+
+        Args:
+            target_objects: Optional list of objects to refine with targeted
+                close-ups. Each dict has 'id' and 'description'. If None
+                and camera mode is active, ALL objects are refined.
+        """
         if self._perception_mode == "camera" and self._perceiver is not None:
-            logger.info("Perceiving scene via stereo cameras")
-            return await self._perceiver.perceive(self._rasim_url)
+            logger.info("Perceiving scene via two-phase camera pipeline")
+            return await self._perceiver.perceive_two_phase(
+                self._rasim_url,
+                target_objects=target_objects,
+            )
         # Default: direct JSON scene state
         response = await self._client.get(f"{self._rasim_url}/scene-state")
         response.raise_for_status()

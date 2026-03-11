@@ -134,11 +134,12 @@ def triangulate_point(
 
 
 class Perceiver:
-    """Multi-pose perception using a single end-effector camera.
+    """Two-phase perception using a single end-effector camera.
 
-    The arm moves to different observation poses (left, right) to capture the
-    scene from two viewpoints.  An LLM identifies objects and pixel
-    coordinates; triangulation computes 3D positions.
+    Phase 1 (scan): Wide-angle left/right observation for rough scene overview.
+    Phase 2 (targeted): For each object of interest, the camera is re-aimed
+    directly at the object and high-res images are captured for precise
+    triangulation (sub-cm accuracy).
     """
 
     def __init__(
@@ -146,18 +147,26 @@ class Perceiver:
         llm: LLMAdapter,
         image_width: int = 640,
         image_height: int = 480,
+        targeted_width: int = 1024,
+        targeted_height: int = 768,
         prompt_path: str | Path | None = None,
+        targeted_prompt_path: str | Path | None = None,
         observation_poses: list[str] | None = None,
     ):
         self._llm = llm
         self._width = image_width
         self._height = image_height
+        self._targeted_width = targeted_width
+        self._targeted_height = targeted_height
         self._prompt = self._load_prompt(prompt_path or PROMPT_DIR / "perceiver.txt")
+        self._targeted_prompt = self._load_prompt(
+            targeted_prompt_path or PROMPT_DIR / "perceiver_targeted.txt"
+        )
         self._client = httpx.AsyncClient(timeout=30.0)
         self._poses = observation_poses or ["left", "right"]
         logger.info(
-            f"Perceiver initialized ({image_width}x{image_height}, "
-            f"poses={self._poses})"
+            f"Perceiver initialized (scan={image_width}x{image_height}, "
+            f"targeted={targeted_width}x{targeted_height}, poses={self._poses})"
         )
 
     def _load_prompt(self, path: str | Path) -> str:
@@ -328,6 +337,272 @@ class Perceiver:
         return {
             "arm": scene.get("arm", {}),
             "props": props,
+            "workspace": scene.get("workspace", {}),
+        }
+
+    async def _capture_targeted_views(
+        self,
+        rasim_url: str,
+        target: list[float],
+    ) -> list[dict[str, Any]]:
+        """Capture high-res images with camera aimed at a specific target.
+
+        Args:
+            rasim_url: Base URL of the RASim service.
+            target: [x, y, z] world position to aim at.
+
+        Returns:
+            List of view dicts with 'image', 'camera', 'pose'.
+        """
+        url = rasim_url.rstrip("/")
+
+        resp = await self._client.post(
+            f"{url}/observe/targeted",
+            json={
+                "target": target,
+                "width": self._targeted_width,
+                "height": self._targeted_height,
+            },
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        views = []
+        for view in data.get("views", []):
+            if not view.get("success"):
+                logger.warning(f"Targeted pose {view.get('pose')} failed")
+                continue
+            views.append({
+                "pose": view["pose"],
+                "image": base64.b64decode(view["image_b64"]),
+                "camera": view["camera"],
+            })
+
+        return views
+
+    async def perceive_targeted(
+        self,
+        rasim_url: str,
+        target: list[float],
+        target_description: str,
+    ) -> dict[str, Any] | None:
+        """Phase 2: Perceive a single object with high precision.
+
+        Aims camera directly at the target, captures high-res left/right
+        images, and triangulates the object's position.
+
+        Args:
+            rasim_url: Base URL of the RASim service.
+            target: [x, y, z] rough position from Phase 1.
+            target_description: e.g. "red box" for the LLM prompt.
+
+        Returns:
+            Dict with 'id', 'pos', etc. or None if triangulation failed.
+        """
+        views = await self._capture_targeted_views(rasim_url, target)
+
+        if len(views) < 2:
+            logger.error(
+                f"Need 2 targeted views, got {len(views)}"
+            )
+            return None
+
+        view_a, view_b = views[0], views[1]
+
+        baseline = np.linalg.norm(
+            np.array(view_a["camera"]["position"])
+            - np.array(view_b["camera"]["position"])
+        )
+        logger.info(
+            f"Targeted baseline for '{target_description}': "
+            f"{baseline:.3f}m ({baseline*100:.1f}cm)"
+        )
+
+        # Build targeted prompt
+        system_prompt = (
+            self._targeted_prompt
+            .replace("{width}", str(self._targeted_width))
+            .replace("{height}", str(self._targeted_height))
+            .replace("{pose_a}", view_a["pose"])
+            .replace("{pose_b}", view_b["pose"])
+            .replace("{target_description}", target_description)
+        )
+
+        llm_result = await self._llm.generate(
+            system_prompt=system_prompt,
+            user_prompt=(
+                f"Find the {target_description} in these two images. "
+                f"It should be near the center of the frame. "
+                f"Give precise pixel coordinates for its center in both images."
+            ),
+            images=[view_a["image"], view_b["image"]],
+        )
+
+        objects = llm_result.get("objects", [])
+        logger.info(
+            f"Targeted LLM detected {len(objects)} objects "
+            f"for '{target_description}'"
+        )
+
+        # Find the target object
+        target_obj = None
+        for obj in objects:
+            if obj.get("is_target"):
+                target_obj = obj
+                break
+
+        if target_obj is None and len(objects) > 0:
+            # Fall back to first object if none marked as target
+            target_obj = objects[0]
+            logger.warning(
+                f"No object marked as target, using first: "
+                f"{target_obj.get('id')}"
+            )
+
+        if target_obj is None:
+            logger.error(
+                f"LLM found no objects for target '{target_description}'"
+            )
+            return None
+
+        px_a = target_obj.get("left_px")
+        px_b = target_obj.get("right_px")
+
+        if not px_a or not px_b:
+            logger.error(
+                f"Target '{target_description}' missing pixel coords"
+            )
+            return None
+
+        try:
+            world_pos = triangulate_point(
+                px_a, px_b,
+                view_a["camera"], view_b["camera"],
+                self._targeted_width, self._targeted_height,
+            )
+            logger.info(
+                f"Targeted '{target_description}': "
+                f"px_a={px_a}, px_b={px_b} → "
+                f"world=[{world_pos[0]:.4f}, {world_pos[1]:.4f}, "
+                f"{world_pos[2]:.4f}]"
+            )
+        except Exception as e:
+            logger.error(
+                f"Targeted triangulation failed for "
+                f"'{target_description}': {e}"
+            )
+            return None
+
+        obj_type = target_obj.get("type", "box")
+        size = _DEFAULT_SIZES.get(obj_type, [0.03, 0.03, 0.03])
+
+        return {
+            "id": target_obj.get("id", "unknown"),
+            "type": obj_type,
+            "color": target_obj.get("color", "unknown"),
+            "pos": [
+                round(float(world_pos[0]), 4),
+                round(float(world_pos[1]), 4),
+                round(float(world_pos[2]), 4),
+            ],
+            "size": size,
+        }
+
+    async def perceive_two_phase(
+        self,
+        rasim_url: str,
+        target_objects: list[dict[str, Any]] | None = None,
+        scene_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Two-phase perception pipeline.
+
+        Phase 1: Rough scan to identify all objects and approximate positions.
+        Phase 2: Targeted close-ups for each object of interest, replacing
+        rough positions with precise triangulated ones.
+
+        Args:
+            rasim_url: Base URL of the RASim service.
+            target_objects: Optional list of objects to refine. Each dict has
+                'id' and 'description' (e.g. "red box"). If None, refines all.
+            scene_config: Optional scene config for known object sizes.
+
+        Returns:
+            Scene state dict with precise positions.
+        """
+        url = rasim_url.rstrip("/")
+
+        # Phase 1: Rough scan
+        logger.info("=== PHASE 1: Rough scene scan ===")
+        rough_result = await self.perceive(rasim_url, scene_config)
+        rough_props = rough_result.get("props", [])
+        logger.info(f"Phase 1 found {len(rough_props)} objects")
+
+        if not rough_props:
+            return rough_result
+
+        # Determine which objects to refine
+        if target_objects:
+            # Only refine specified targets
+            refine_ids = {t["id"] for t in target_objects}
+            targets = [
+                p for p in rough_props if p["id"] in refine_ids
+            ]
+            # Keep non-target objects at rough positions
+            other_props = [
+                p for p in rough_props if p["id"] not in refine_ids
+            ]
+        else:
+            # Refine all objects
+            targets = rough_props
+            other_props = []
+
+        # Phase 2: Targeted close-ups
+        logger.info(
+            f"=== PHASE 2: Targeted refinement of "
+            f"{len(targets)} objects ==="
+        )
+        refined_props = list(other_props)  # start with non-targets
+
+        for prop in targets:
+            obj_id = prop["id"]
+            rough_pos = prop["pos"]
+            description = f"{prop.get('color', '')} {prop.get('type', 'object')}".strip()
+
+            logger.info(
+                f"Refining '{obj_id}' ({description}) at rough "
+                f"pos=[{rough_pos[0]:.3f}, {rough_pos[1]:.3f}, "
+                f"{rough_pos[2]:.3f}]"
+            )
+
+            refined = await self.perceive_targeted(
+                rasim_url, rough_pos, description
+            )
+
+            if refined:
+                logger.info(
+                    f"Refined '{obj_id}': "
+                    f"[{rough_pos[0]:.3f}, {rough_pos[1]:.3f}, "
+                    f"{rough_pos[2]:.3f}] → "
+                    f"[{refined['pos'][0]:.3f}, {refined['pos'][1]:.3f}, "
+                    f"{refined['pos'][2]:.3f}]"
+                )
+                refined_props.append(refined)
+            else:
+                logger.warning(
+                    f"Targeted refinement failed for '{obj_id}', "
+                    f"keeping rough position"
+                )
+                refined_props.append(prop)
+
+        # Get current arm state + workspace from RASim
+        resp = await self._client.get(f"{url}/scene-state")
+        resp.raise_for_status()
+        scene = resp.json()
+
+        return {
+            "arm": scene.get("arm", {}),
+            "props": refined_props,
             "workspace": scene.get("workspace", {}),
         }
 

@@ -1,0 +1,49 @@
+You are analyzing two high-resolution images from a camera mounted on a robot arm. The camera has been specifically aimed at ONE target object to get a precise close-up view from two angles.
+
+## Image Details
+- Resolution: {width} x {height} pixels
+- First image: captured from the "{pose_a}" observation pose
+- Second image: captured from the "{pose_b}" observation pose
+- The camera is aimed at a specific object: {target_description}
+- Both images are centered on the same target object
+
+## Your Task
+Find the TARGET object ({target_description}) and provide its precise pixel coordinates in both images. The target object should be near the center of both frames.
+
+Also identify any other objects visible in BOTH images (they will be useful context but are not the primary target).
+
+## Pixel Coordinate Rules
+- Origin (0, 0) is the TOP-LEFT corner of the image
+- u increases rightward (0 to {width})
+- v increases downward (0 to {height})
+- Estimate the CENTER of each object, not an edge or corner
+- **PRECISION IS CRITICAL** — measure carefully, pixel accuracy matters
+
+## Tips for Precise Estimation
+- The target object should be near the center of the frame
+- Look at the object's bounding box and find its geometric center
+- Use nearby features (edges, shadows, other objects) as reference points
+- Both images show the same scene from slightly different angles
+
+## Output Format
+Return ONLY valid JSON:
+```json
+{
+  "objects": [
+    {
+      "id": "red_box",
+      "color": "red",
+      "type": "box",
+      "left_px": [520, 390],
+      "right_px": [480, 385],
+      "is_target": true
+    }
+  ]
+}
+```
+
+## Important
+- Do NOT estimate distances, sizes, or 3D positions — only pixel coordinates.
+- Mark the target object with "is_target": true.
+- Include other visible objects too (with "is_target": false) — they help with spatial context.
+- If an object is only visible in one image, skip it.
