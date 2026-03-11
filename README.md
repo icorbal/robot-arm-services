@@ -219,6 +219,10 @@ python -m pytest tests/test_triangulation.py tests/test_integration.py -v
 python -m pytest tests/test_e2e.py -v -s
 ```
 
+## AI Disclaimer
+
+This project was built with significant AI assistance (architecture, code, docs). Human-directed, AI-implemented.
+
 ## License
 
 MIT
