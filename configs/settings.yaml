@@ -11,6 +11,6 @@ executor:
   step_delay: 0.5
 
 perception:
-  mode: "camera"  # "camera" for stereo vision, "scene_state" for JSON (legacy)
+  mode: "camera"  # "camera" for LLM-based perception, "scene_state" for direct JSON
   image_width: 640
   image_height: 480

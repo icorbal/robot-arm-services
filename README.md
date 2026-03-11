@@ -6,10 +6,6 @@ LLM-powered task planner and executor for robot arm control. Part of the Robot A
 
 Accepts natural language tasks (e.g., "put the blue box on top of the red one"), plans gripper movements via an LLM, executes them on RASim, and verifies completion — all in an automated loop.
 
-**Stages:**
-- **1a:** Scene state perception + planning + execution (complete)
-- **1b:** Multi-pose camera vision with LLM-based perception (current)
-
 ## Quick Start
 
 ```bash
@@ -53,13 +49,13 @@ rasim:
   url: "http://localhost:8100"
 llm:
   provider: "openai"
-  model: "gpt-4o"
+  model: "gpt-5.4"
   api_key_env: "OPENAI_API_KEY"
 executor:
   max_iterations: 10
   step_delay: 0.5
 perception:
-  mode: "scene_state"  # "scene_state" | "camera"
+  mode: "camera"  # "camera" for LLM-based perception, "scene_state" for direct JSON
 ```
 
 ## REST API
@@ -90,8 +86,6 @@ curl -X POST http://localhost:8200/task \
 ### GET /snapshot
 
 On-demand perception snapshot at the current arm position (does **not** move the arm). Use for mid-task situation assessment.
-
-Returns: images (base64), camera params, scene state, interaction zone check.
 
 ## Architecture
 
@@ -125,35 +119,48 @@ User: "put the blue box on top of the red one"
 ### Execution Loop
 
 1. **Pre-flight** — Verify all props are in the interaction zone
-2. **Perceive** — Get scene state (direct JSON or multi-pose camera + LLM)
+2. **Perceive** — Scan scene via camera (Phase 1: quick left/right observation)
 3. **Plan** — LLM plans next step given scene + task + history
 4. **Execute** — Send commands to RASim
-5. **Safety checks:**
+5. **Grab verify** — If `grip_close` was issued, targeted observation checks the object was actually picked up
+6. **Safety checks:**
    - Props fallen off table → `safety_abort`
    - Props outside interaction zone → `interaction_zone_violation`
-6. **Verify** — LLM checks task completion
-7. **Loop** or return result
+7. **Verify** — LLM checks task completion
+8. **Loop** — On failure, escalate to refined perception (Phase 2) and retry
+
+### Perception Pipeline
+
+A single camera is mounted on the arm's end-effector. Perception is adaptive:
+
+**Phase 1 — Scan (default):**
+- Arm moves to left/right observation poses (~23° angular separation, ~19cm baseline)
+- LLM identifies all objects and estimates pixel coordinates in both views
+- DLT triangulation computes 3D positions (~1-2cm accuracy with GPT-5.4)
+- Sufficient for most gripping tasks
+
+**Phase 2 — Targeted refinement (on-demand):**
+- Triggered when a grab fails or task verification fails
+- For each object, camera is re-aimed directly at it via `POST /observe/targeted`
+- High-res (1024×768) left/right images captured for that specific object
+- Sub-cm triangulation accuracy
+
+**Grab verification:**
+- After every `grip_close`, a targeted observation checks the object's previous position
+- If the object is still there → grab missed → escalate to Phase 2 and replan
+- If the object is gone → grab confirmed → continue execution
 
 ### Perception Modes
 
 | Mode | Source | Accuracy | Cost |
 |------|--------|----------|------|
 | `scene_state` | RASim JSON (ground truth) | Perfect | Free |
-| `camera` | Multi-pose images → LLM → triangulation | 1-3cm (GPT-5.4) | API calls |
-
-**Camera perception pipeline:**
-- A single camera is mounted on the arm's end-effector
-- The arm moves to different observation poses (left/right, ~58° apart) to capture the scene from multiple viewpoints
-- LLM (GPT-5.4) identifies objects, matches across views, estimates pixel coordinates
-- DLT triangulation computes 3D world positions from the multi-view correspondences
-- The wide angular baseline provides significantly better triangulation accuracy than a fixed stereo rig
-
-**On-demand snapshots** can be taken at any point during execution via `GET /snapshot` — the arm does not need to move to the observation pose.
+| `camera` | Multi-pose images → LLM → triangulation | 1-2cm (GPT-5.4) | API calls |
 
 ## Safety Systems
 
 ### Interaction Zone
-The interaction zone is a rectangular area on the table visible from the observation poses and reachable by the arm. It's enforced at three levels:
+The interaction zone is a rectangular area on the table visible from the observation poses and reachable by the arm. Enforced at three levels:
 
 1. **Scene loading** — RASim rejects props outside the zone
 2. **Pre-flight** — Executor verifies all props before starting a task
@@ -167,26 +174,30 @@ Coordinate-based check after each step. Objects below the table surface or outsi
 ### Programmatic Spatial Verification
 The verifier pre-computes spatial relationships (stacking, ordering, distances) programmatically and injects them as authoritative facts into the LLM prompt. The LLM interprets whether facts satisfy the task — it never does coordinate math.
 
-### LLM Pixel Detection (Camera Mode)
-GPT-5.4 achieves ~14px pixel accuracy at 1024×768 resolution. The multi-pose approach (arm moves to left and right observation poses) provides a ~15cm baseline with ~58° angular separation, yielding 1-3cm triangulation accuracy — much more robust to pixel estimation errors than a narrow fixed-baseline stereo setup.
+### Adaptive Perception
+Phase 1 scan is fast and cheap (1 LLM call). Phase 2 targeted refinement costs more but achieves sub-cm accuracy. The executor only escalates to Phase 2 when needed — grab failures or task verification failures. This typically saves 4+ LLM calls per task.
+
+### LLM Pixel Detection
+GPT-5.4 achieves ~14px mean pixel accuracy at 1024×768 resolution. The multi-pose approach (arm moves to left and right observation poses) provides a ~19cm baseline with ~23° angular separation, yielding 1-2cm triangulation accuracy.
 
 ## Project Structure
 
 ```
 robot-arm-services/
 ├── src/
-│   ├── llm_adapter.py     # Abstract LLM provider + OpenAI implementation
-│   ├── planner.py          # LLM task planner (scene → commands)
-│   ├── verifier.py         # LLM completion checker + spatial analysis
-│   ├── executor.py         # Plan-execute-verify loop + safety + IZ checks
-│   ├── perception.py       # Multi-pose perception: LLM detection + DLT triangulation
-│   └── api.py              # FastAPI REST endpoints
+│   ├── llm_adapter.py       # Abstract LLM provider + OpenAI implementation
+│   ├── planner.py            # LLM task planner (scene → commands)
+│   ├── verifier.py           # LLM completion checker + spatial analysis
+│   ├── executor.py           # Plan-execute-verify loop + grab verification + safety
+│   ├── perception.py         # Adaptive two-phase perception: LLM detection + DLT triangulation
+│   └── api.py                # FastAPI REST endpoints
 ├── prompts/
-│   ├── planner.txt         # Planner prompt (scene-state mode)
-│   ├── planner_camera.txt  # Planner prompt (camera mode)
-│   ├── verifier.txt        # Verifier prompt (scene-state mode)
-│   ├── verifier_camera.txt # Verifier prompt (camera mode)
-│   └── perceiver.txt       # Perceiver prompt (object detection + pixel coords)
+│   ├── planner.txt           # Planner prompt (scene-state mode)
+│   ├── planner_camera.txt    # Planner prompt (camera mode)
+│   ├── verifier.txt          # Verifier prompt (scene-state mode)
+│   ├── verifier_camera.txt   # Verifier prompt (camera mode)
+│   ├── perceiver.txt         # Perceiver prompt (scene scan — all objects)
+│   └── perceiver_targeted.txt # Perceiver prompt (targeted — single object)
 ├── configs/
 │   └── settings.yaml
 ├── tests/

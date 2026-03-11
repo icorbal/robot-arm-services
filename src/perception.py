@@ -1,10 +1,21 @@
-"""Multi-pose perception pipeline.
+"""Adaptive two-phase perception pipeline.
 
 Uses a single camera mounted on the robot arm's end-effector.  The arm moves
-to different observation poses (left / right) so the camera captures the scene
-from two viewpoints with a wide angular baseline (~58°).  An LLM identifies
-objects and their pixel coordinates in each view; DLT triangulation then
+to observation poses (left / right) so the camera captures the scene from two
+viewpoints with a wide angular baseline (~23°, ~19cm separation).  An LLM
+identifies objects and their pixel coordinates in each view; DLT triangulation
 computes 3D world positions.
+
+Two phases:
+- **Phase 1 (scan)**: Quick left/right observation at 640×480.  Identifies all
+  objects and computes approximate 3D positions.  Sufficient accuracy (~1-2cm)
+  for most gripping tasks.
+- **Phase 2 (targeted)**: Optional refinement.  For each object of interest,
+  the camera is re-aimed directly at that object and high-res (1024×768)
+  left/right images are captured for sub-cm triangulation accuracy.
+
+Phase 2 is triggered on-demand by the executor when a grab fails or task
+verification fails — not run by default.
 """
 
 import base64

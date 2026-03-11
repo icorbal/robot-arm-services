@@ -162,7 +162,7 @@ class TaskVerifier:
         Args:
             scene_state: Current scene state from RASim
             task: Original task description
-            images: Optional stereo camera images for visual verification
+            images: Optional camera images (left/right observation poses) for visual verification
 
         Returns:
             Dict with "completed" (bool), "reason" (str), "confidence" (float)
@@ -183,7 +183,7 @@ class TaskVerifier:
 
         user_msg = f"Is this task complete? {task}"
         if images:
-            user_msg += "\n\nAttached: stereo camera images (left eye, right eye) for visual confirmation."
+            user_msg += "\n\nAttached: camera images from left and right observation poses for visual confirmation."
 
         logger.info(f"Verifying task completion: {task}")
         result = await self._llm.generate(

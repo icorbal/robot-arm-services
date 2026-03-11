@@ -1,10 +1,26 @@
-"""Plan-execute-verify loop - orchestrates the full task execution pipeline."""
+"""Plan-execute-verify loop for robot arm task execution.
+
+Orchestrates perception → planning → execution → verification in a loop.
+Perception is pluggable: either direct scene-state JSON from RASim, or
+camera-based perception using LLM-driven object detection + triangulation.
+
+Camera perception uses an adaptive two-phase pipeline:
+- Phase 1 (default): Quick left/right scan for rough object positions.
+- Phase 2 (on-demand): Targeted close-ups for sub-cm accuracy, triggered
+  automatically when a grab fails or task verification fails.
+
+Grab verification: after every grip_close, a targeted observation checks
+whether the object is still at its previous position (miss) or has moved
+with the gripper (success).  On miss, the pipeline escalates to refined
+perception and replans.
+"""
 
 import asyncio
 import logging
 from typing import Any
 
 import httpx
+import numpy as np
 
 from .perception import Perceiver
 from .planner import TaskPlanner
@@ -194,7 +210,7 @@ class TaskExecutor:
         return response.json()
 
     async def _get_camera_images(self) -> list[bytes] | None:
-        """Get stereo camera images for visual verification (camera mode only)."""
+        """Get observation images from left/right poses for visual verification."""
         if self._perception_mode == "camera" and self._perceiver is not None:
             try:
                 left, right = await self._perceiver.get_camera_images(self._rasim_url)
@@ -242,7 +258,6 @@ class TaskExecutor:
                         f"previous position — likely grabbed ✅")
             return {"grabbed": True, "details": "object not visible at previous position"}
 
-        import numpy as np
         dist = np.linalg.norm(
             np.array(refined["pos"]) - np.array(pre_grab_pos)
         )
@@ -304,7 +319,6 @@ class TaskExecutor:
             return None  # Can't determine grab location
 
         # Find closest object to grab position
-        import numpy as np
         props = scene_state.get("props", [])
         best_id = None
         best_dist = float("inf")
