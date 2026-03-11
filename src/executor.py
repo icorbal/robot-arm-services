@@ -467,8 +467,7 @@ class TaskExecutor:
             if not commands:
                 logger.info("Planner returned no commands — verifying before stopping")
                 try:
-                    verify_images = await self._get_camera_images()
-                    check = await self._verifier.verify(scene_state, task, images=verify_images)
+                    check = await self._verifier.verify(scene_state, task)
                 except Exception as e:
                     check = {"completed": False, "reason": str(e), "confidence": 0.0}
 
@@ -526,28 +525,30 @@ class TaskExecutor:
                 "results": exec_result.get("results", []),
             })
 
-            # 3b. Grab verification: after grip_close, check if we
-            # actually got the object.  If not, re-perceive with
-            # targeted close-up and inject failure context for replanning.
+            # 3b. Grab verification — only when grip_close occurs WITHOUT
+            # a subsequent place (mid-task grab, not a complete pick-and-place).
+            has_place = any(c.get("type") == "place" for c in commands)
             grab_failed = False
-            if self._perception_mode == "camera" and self._perceiver is not None:
+            if not has_place and self._perception_mode == "camera" and self._perceiver is not None:
                 grab_verified = await self._check_grab_in_commands(
                     commands, scene_state, execution_log, iteration
                 )
                 if grab_verified is False:
                     grab_failed = True
+                    # Force refined perception and replan on next iteration
+                    use_refined_next = True
+                    continue
 
-            # 4. Get updated scene state
+            # 4. Post-execution checks use direct JSON scene state from
+            # RASim (no arm movement).  Camera-based perception only
+            # happens at the START of each iteration (step 1).
             try:
-                # Use refined perception if grab failed (need accurate re-perception)
-                updated_state = await self._get_scene_state(refined=grab_failed)
+                response = await self._client.get(f"{self._rasim_url}/scene-state")
+                response.raise_for_status()
+                updated_state = response.json()
             except httpx.HTTPError as e:
                 logger.error(f"Failed to get updated scene state: {e}")
                 updated_state = exec_result.get("scene_state", scene_state)
-
-            if grab_failed:
-                # Skip verification — force replanning with refined positions
-                continue
 
             # 4b. Safety check: abort if any prop fell off the table
             fallen = self._check_fallen_props(updated_state)
@@ -595,10 +596,11 @@ class TaskExecutor:
                     "log": execution_log,
                 }
 
-            # 5. Verify task completion
+            # 5. Verify task completion using ground-truth scene state.
+            # No camera observation needed — the verifier uses spatial
+            # facts computed from coordinates.
             try:
-                verify_images = await self._get_camera_images()
-                verification = await self._verifier.verify(updated_state, task, images=verify_images)
+                verification = await self._verifier.verify(updated_state, task)
             except Exception as e:
                 logger.warning(f"Verification failed: {e}")
                 verification = {"completed": False, "reason": f"Verification error: {e}", "confidence": 0.0}
