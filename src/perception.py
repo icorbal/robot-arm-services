@@ -1,10 +1,13 @@
-"""Stereo vision perception pipeline.
+"""Multi-pose perception pipeline.
 
-Uses two cameras mounted on the robot arm's end-effector to perceive the scene.
-LLM identifies objects and their pixel coordinates; triangulation code computes
-3D world positions.
+Uses a single camera mounted on the robot arm's end-effector.  The arm moves
+to different observation poses (left / right) so the camera captures the scene
+from two viewpoints with a wide angular baseline (~58°).  An LLM identifies
+objects and their pixel coordinates in each view; DLT triangulation then
+computes 3D world positions.
 """
 
+import base64
 import json
 import logging
 import math
@@ -37,11 +40,11 @@ def triangulate_point(
     width: int,
     height: int,
 ) -> np.ndarray:
-    """Triangulate a 3D world point from stereo pixel coordinates using DLT.
+    """Triangulate a 3D world point from two-view pixel coordinates using DLT.
 
     Args:
-        px_left: [u, v] pixel coordinates in the left image.
-        px_right: [u, v] pixel coordinates in the right image.
+        px_left: [u, v] pixel coordinates in the first view.
+        px_right: [u, v] pixel coordinates in the second view.
         cam_left: Camera params dict with fovy, position, rotation_matrix.
         cam_right: Camera params dict with fovy, position, rotation_matrix.
         width: Image width in pixels.
@@ -130,8 +133,13 @@ def triangulate_point(
     return X
 
 
-class StereoPerceiver:
-    """Stereo vision perception using LLM for object detection and code for triangulation."""
+class Perceiver:
+    """Multi-pose perception using a single end-effector camera.
+
+    The arm moves to different observation poses (left, right) to capture the
+    scene from two viewpoints.  An LLM identifies objects and pixel
+    coordinates; triangulation computes 3D positions.
+    """
 
     def __init__(
         self,
@@ -139,14 +147,17 @@ class StereoPerceiver:
         image_width: int = 640,
         image_height: int = 480,
         prompt_path: str | Path | None = None,
+        observation_poses: list[str] | None = None,
     ):
         self._llm = llm
         self._width = image_width
         self._height = image_height
         self._prompt = self._load_prompt(prompt_path or PROMPT_DIR / "perceiver.txt")
         self._client = httpx.AsyncClient(timeout=30.0)
+        self._poses = observation_poses or ["left", "right"]
         logger.info(
-            f"StereoPerceiver initialized ({image_width}x{image_height})"
+            f"Perceiver initialized ({image_width}x{image_height}, "
+            f"poses={self._poses})"
         )
 
     def _load_prompt(self, path: str | Path) -> str:
@@ -158,20 +169,54 @@ class StereoPerceiver:
         """Clean up HTTP client."""
         await self._client.aclose()
 
+    async def _capture_views(
+        self, rasim_url: str
+    ) -> list[dict[str, Any]]:
+        """Move to observation poses and capture images + camera params.
+
+        Returns:
+            List of view dicts, each with 'image' (bytes), 'camera' (dict),
+            and 'pose' (str).
+        """
+        url = rasim_url.rstrip("/")
+
+        resp = await self._client.post(
+            f"{url}/observe",
+            json={
+                "poses": self._poses,
+                "width": self._width,
+                "height": self._height,
+            },
+            timeout=120.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        views = []
+        for i, view in enumerate(data.get("views", [])):
+            if not view.get("success"):
+                logger.warning(f"Observation pose {self._poses[i]} failed")
+                continue
+            views.append({
+                "pose": self._poses[i],
+                "image": base64.b64decode(view["image_b64"]),
+                "camera": view["camera"],
+            })
+
+        return views
+
     async def perceive(
         self,
         rasim_url: str,
         scene_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Perceive the scene using stereo cameras.
+        """Perceive the scene using multi-pose observation.
 
         Steps:
-        1. Command arm to observation pose
-        2. Capture stereo images
-        3. Get camera parameters
-        4. Ask LLM to identify objects and pixel coordinates
-        5. Triangulate 3D positions
-        6. Return scene state dict compatible with planner
+        1. Move arm to observation poses and capture images
+        2. Ask LLM to identify objects and pixel coordinates in each view
+        3. Triangulate 3D positions from the two viewpoints
+        4. Return scene state dict compatible with planner
 
         Args:
             rasim_url: Base URL of the RASim service.
@@ -182,75 +227,78 @@ class StereoPerceiver:
         """
         url = rasim_url.rstrip("/")
 
-        # 1. Move to observation pose
-        logger.info("Commanding arm to observation pose")
-        resp = await self._client.post(
-            f"{url}/execute",
-            json={"commands": [{"type": "observe"}]},
-            timeout=60.0,
+        # 1. Capture views from multiple poses
+        views = await self._capture_views(rasim_url)
+
+        if len(views) < 2:
+            logger.error(
+                f"Need at least 2 views for triangulation, got {len(views)}"
+            )
+            # Fall back to scene-state API
+            resp = await self._client.get(f"{url}/scene-state")
+            resp.raise_for_status()
+            return resp.json()
+
+        view_a, view_b = views[0], views[1]
+
+        baseline = np.linalg.norm(
+            np.array(view_a["camera"]["position"])
+            - np.array(view_b["camera"]["position"])
         )
-        resp.raise_for_status()
-        exec_result = resp.json()
-
-        # 2. Capture stereo images
-        logger.info("Capturing stereo images")
-        resp_left = await self._client.get(
-            f"{url}/eye/left", params={"width": self._width, "height": self._height}
+        logger.info(
+            f"Observation baseline: {baseline:.3f}m ({baseline*100:.1f}cm) "
+            f"[{view_a['pose']} → {view_b['pose']}]"
         )
-        resp_left.raise_for_status()
-        img_left = resp_left.content
 
-        resp_right = await self._client.get(
-            f"{url}/eye/right", params={"width": self._width, "height": self._height}
-        )
-        resp_right.raise_for_status()
-        img_right = resp_right.content
-
-        # 3. Get camera parameters
-        resp_params = await self._client.get(f"{url}/eye/params")
-        resp_params.raise_for_status()
-        cam_params = resp_params.json()
-
-        # 4. Ask LLM to identify objects and pixel coordinates
-        logger.info("Sending stereo images to LLM for object detection")
+        # 2. Ask LLM to identify objects and pixel coordinates
+        logger.info("Sending observation images to LLM for object detection")
         system_prompt = self._prompt.replace(
             "{width}", str(self._width)
         ).replace(
             "{height}", str(self._height)
+        ).replace(
+            "{pose_a}", view_a["pose"]
+        ).replace(
+            "{pose_b}", view_b["pose"]
         )
 
         llm_result = await self._llm.generate(
             system_prompt=system_prompt,
             user_prompt=(
-                "Analyze these two stereo camera images (left eye, then right eye). "
-                "Identify all objects on the table and their pixel coordinates in each image."
+                f"Analyze these two images captured from observation poses "
+                f"'{view_a['pose']}' and '{view_b['pose']}'. "
+                f"Identify all objects on the table and their pixel coordinates "
+                f"in each image."
             ),
-            images=[img_left, img_right],
+            images=[view_a["image"], view_b["image"]],
         )
 
         objects = llm_result.get("objects", [])
         logger.info(f"LLM detected {len(objects)} objects")
 
-        # 5. Triangulate 3D positions
+        # 3. Triangulate 3D positions
         props = []
         for obj in objects:
             obj_id = obj.get("id", "unknown")
-            left_px = obj.get("left_px")
-            right_px = obj.get("right_px")
+            px_a = obj.get("left_px")
+            px_b = obj.get("right_px")
 
-            if not left_px or not right_px:
-                logger.warning(f"Object {obj_id} missing pixel coordinates, skipping")
+            if not px_a or not px_b:
+                logger.warning(
+                    f"Object {obj_id} missing pixel coordinates, skipping"
+                )
                 continue
 
             try:
                 world_pos = triangulate_point(
-                    left_px, right_px,
-                    cam_params["left"], cam_params["right"],
+                    px_a, px_b,
+                    view_a["camera"], view_b["camera"],
                     self._width, self._height,
                 )
                 logger.info(
-                    f"Object {obj_id}: left_px={left_px}, right_px={right_px} "
-                    f"→ world=[{world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}]"
+                    f"Object {obj_id}: pose_a={px_a}, pose_b={px_b} "
+                    f"→ world=[{world_pos[0]:.4f}, {world_pos[1]:.4f}, "
+                    f"{world_pos[2]:.4f}]"
                 )
             except Exception as e:
                 logger.error(f"Triangulation failed for {obj_id}: {e}")
@@ -264,38 +312,36 @@ class StereoPerceiver:
                 "id": obj_id,
                 "type": obj_type,
                 "color": obj.get("color", "unknown"),
-                "pos": [round(float(world_pos[0]), 4),
-                        round(float(world_pos[1]), 4),
-                        round(float(world_pos[2]), 4)],
+                "pos": [
+                    round(float(world_pos[0]), 4),
+                    round(float(world_pos[1]), 4),
+                    round(float(world_pos[2]), 4),
+                ],
                 "size": size,
             })
 
-        # Get arm state from the execution result
-        arm_state = exec_result.get("scene_state", {}).get("arm", {})
-        workspace = exec_result.get("scene_state", {}).get("workspace", {})
+        # Get current arm state + workspace from RASim
+        resp = await self._client.get(f"{url}/scene-state")
+        resp.raise_for_status()
+        scene = resp.json()
 
         return {
-            "arm": arm_state,
+            "arm": scene.get("arm", {}),
             "props": props,
-            "workspace": workspace,
+            "workspace": scene.get("workspace", {}),
         }
 
-    async def get_camera_images(self, rasim_url: str) -> tuple[bytes, bytes]:
-        """Capture and return stereo images (for verifier use).
+    async def get_camera_images(
+        self, rasim_url: str
+    ) -> tuple[bytes, bytes]:
+        """Capture observation images from two poses (for verifier use).
 
         Returns:
-            Tuple of (left_image_bytes, right_image_bytes).
+            Tuple of (pose_a_image_bytes, pose_b_image_bytes).
         """
-        url = rasim_url.rstrip("/")
-
-        resp_left = await self._client.get(
-            f"{url}/eye/left", params={"width": self._width, "height": self._height}
-        )
-        resp_left.raise_for_status()
-
-        resp_right = await self._client.get(
-            f"{url}/eye/right", params={"width": self._width, "height": self._height}
-        )
-        resp_right.raise_for_status()
-
-        return resp_left.content, resp_right.content
+        views = await self._capture_views(rasim_url)
+        if len(views) < 2:
+            raise RuntimeError(
+                f"Need 2 views, got {len(views)}"
+            )
+        return views[0]["image"], views[1]["image"]

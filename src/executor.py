@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from .perception import StereoPerceiver
+from .perception import Perceiver
 from .planner import TaskPlanner
 from .verifier import TaskVerifier
 
@@ -33,7 +33,7 @@ class TaskExecutor:
         max_iterations: int = 10,
         step_delay: float = 0.5,
         perception_mode: str = "scene_state",
-        perceiver: StereoPerceiver | None = None,
+        perceiver: Perceiver | None = None,
     ):
         self._planner = planner
         self._verifier = verifier
@@ -103,7 +103,7 @@ class TaskExecutor:
     async def take_snapshot(
         self, width: int = 1024, height: int = 768
     ) -> dict[str, Any]:
-        """Take an on-demand stereo perception snapshot.
+        """Take an on-demand perception snapshot.
 
         Captures images at the current arm position without moving to observe pose.
         Use for mid-task situation assessment.

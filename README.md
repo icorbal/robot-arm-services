@@ -8,7 +8,7 @@ Accepts natural language tasks (e.g., "put the blue box on top of the red one"),
 
 **Stages:**
 - **1a:** Scene state perception + planning + execution (complete)
-- **1b:** Stereo camera vision with LLM-based perception (current)
+- **1b:** Multi-pose camera vision with LLM-based perception (current)
 
 ## Quick Start
 
@@ -75,7 +75,7 @@ Default: `http://localhost:8200`
 | POST | `/task` | Execute a natural language task |
 | POST | `/task/cancel` | Cancel running task |
 | GET | `/task/status` | Check if a task is running |
-| GET | `/snapshot` | On-demand stereo perception snapshot |
+| GET | `/snapshot` | On-demand perception snapshot |
 
 ### POST /task
 
@@ -89,9 +89,9 @@ curl -X POST http://localhost:8200/task \
 
 ### GET /snapshot
 
-On-demand stereo perception at the current arm position (does **not** move the arm). Use for mid-task situation assessment.
+On-demand perception snapshot at the current arm position (does **not** move the arm). Use for mid-task situation assessment.
 
-Returns: stereo images (base64), camera params, scene state, interaction zone check.
+Returns: images (base64), camera params, scene state, interaction zone check.
 
 ## Architecture
 
@@ -103,7 +103,7 @@ User: "put the blue box on top of the red one"
             │    RAServ      │
             │               │
             │  ┌──────────┐ │
-            │  │ Perceiver │ │  stereo images / scene state
+            │  │ Perceiver │ │  observation images / scene state
             │  └──────────┘ │ ◄──────────────────────────► ┌──────────┐
             │       │       │                               │  RASim   │
             │  ┌──────────┐ │  POST /execute                │ (MuJoCo) │
@@ -125,7 +125,7 @@ User: "put the blue box on top of the red one"
 ### Execution Loop
 
 1. **Pre-flight** — Verify all props are in the interaction zone
-2. **Perceive** — Get scene state (direct JSON or stereo camera + LLM)
+2. **Perceive** — Get scene state (direct JSON or multi-pose camera + LLM)
 3. **Plan** — LLM plans next step given scene + task + history
 4. **Execute** — Send commands to RASim
 5. **Safety checks:**
@@ -139,20 +139,21 @@ User: "put the blue box on top of the red one"
 | Mode | Source | Accuracy | Cost |
 |------|--------|----------|------|
 | `scene_state` | RASim JSON (ground truth) | Perfect | Free |
-| `camera` | Stereo images → LLM → triangulation | 1-3cm (GPT-5.4) | API calls |
+| `camera` | Multi-pose images → LLM → triangulation | 1-3cm (GPT-5.4) | API calls |
 
 **Camera perception pipeline:**
-- Stereo images captured from gripper-mounted cameras (20cm baseline, 60° FOV)
+- A single camera is mounted on the arm's end-effector
+- The arm moves to different observation poses (left/right, ~58° apart) to capture the scene from multiple viewpoints
 - LLM (GPT-5.4) identifies objects, matches across views, estimates pixel coordinates
-- DLT triangulation computes 3D world positions from stereo correspondences
-- LLM also provides: orientation assessment, grip strategy, spatial relationships
+- DLT triangulation computes 3D world positions from the multi-view correspondences
+- The wide angular baseline provides significantly better triangulation accuracy than a fixed stereo rig
 
 **On-demand snapshots** can be taken at any point during execution via `GET /snapshot` — the arm does not need to move to the observation pose.
 
 ## Safety Systems
 
 ### Interaction Zone
-The interaction zone is a rectangular area on the table visible by **both** stereo cameras and reachable by the arm. It's enforced at three levels:
+The interaction zone is a rectangular area on the table visible from the observation poses and reachable by the arm. It's enforced at three levels:
 
 1. **Scene loading** — RASim rejects props outside the zone
 2. **Pre-flight** — Executor verifies all props before starting a task
@@ -167,37 +168,31 @@ Coordinate-based check after each step. Objects below the table surface or outsi
 The verifier pre-computes spatial relationships (stacking, ordering, distances) programmatically and injects them as authoritative facts into the LLM prompt. The LLM interprets whether facts satisfy the task — it never does coordinate math.
 
 ### LLM Pixel Detection (Camera Mode)
-GPT-5.4 achieves ~14px pixel accuracy at 1024×768 resolution, yielding 1-2cm triangulation accuracy with a 20cm stereo baseline. Side-by-side composite images work best — the LLM sees both views in one image and handles object matching, orientation assessment, and grip strategy without any color-based heuristics.
+GPT-5.4 achieves ~14px pixel accuracy at 1024×768 resolution. The multi-pose approach (arm moves to left and right observation poses) provides a ~15cm baseline with ~58° angular separation, yielding 1-3cm triangulation accuracy — much more robust to pixel estimation errors than a narrow fixed-baseline stereo setup.
 
 ## Project Structure
 
 ```
 robot-arm-services/
 ├── src/
-│   ├── llm_adapter.py          # Abstract LLM provider + OpenAI implementation
-│   ├── planner.py              # LLM task planner (scene → commands)
-│   ├── verifier.py             # LLM completion checker + spatial analysis
-│   ├── executor.py             # Plan-execute-verify loop + safety + IZ checks
-│   ├── perception.py           # Stereo perception: LLM detection + DLT triangulation
-│   ├── perception_cv.py        # CV color segmentation fallback
-│   ├── perception_multiview.py # Multi-view perception (arm repositioning)
-│   └── api.py                  # FastAPI REST endpoints
+│   ├── llm_adapter.py     # Abstract LLM provider + OpenAI implementation
+│   ├── planner.py          # LLM task planner (scene → commands)
+│   ├── verifier.py         # LLM completion checker + spatial analysis
+│   ├── executor.py         # Plan-execute-verify loop + safety + IZ checks
+│   ├── perception.py       # Multi-pose perception: LLM detection + DLT triangulation
+│   └── api.py              # FastAPI REST endpoints
 ├── prompts/
-│   ├── planner.txt
-│   ├── verifier.txt
-│   └── perceiver.txt
+│   ├── planner.txt         # Planner prompt (scene-state mode)
+│   ├── planner_camera.txt  # Planner prompt (camera mode)
+│   ├── verifier.txt        # Verifier prompt (scene-state mode)
+│   ├── verifier_camera.txt # Verifier prompt (camera mode)
+│   └── perceiver.txt       # Perceiver prompt (object detection + pixel coords)
 ├── configs/
 │   └── settings.yaml
 ├── tests/
-│   ├── test_triangulation.py        # DLT triangulation math (4 tests)
-│   ├── test_integration.py          # Unit tests (mocked LLM + RASim)
-│   ├── test_e2e.py                  # E2e (mocked LLM + real MuJoCo)
-│   ├── test_stereo_investigation.py # FOV/resolution/noise analysis
-│   ├── test_baseline_sweep.py       # Baseline vs accuracy sweep
-│   ├── test_llm_pixel_gpt54.py      # GPT-5.4 vs GPT-4o comparison
-│   ├── test_gpt54_sweep.py          # Multi-config prompt/resolution sweep
-│   ├── test_gpt54_full_perception.py # Full perception (orient, grip, stacking)
-│   └── test_interaction_space.py    # Camera frustum intersection computation
+│   ├── test_triangulation.py # DLT triangulation math
+│   ├── test_integration.py   # Unit tests (mocked LLM + RASim)
+│   └── test_e2e.py           # E2e (mocked LLM + real MuJoCo)
 ├── .env.example
 ├── run.py
 └── requirements.txt
@@ -211,9 +206,6 @@ python -m pytest tests/test_triangulation.py tests/test_integration.py -v
 
 # E2e (requires RASim's MuJoCo)
 python -m pytest tests/test_e2e.py -v -s
-
-# Stereo vision tests (requires running RASim + OPENAI_API_KEY)
-python tests/test_gpt54_full_perception.py
 ```
 
 ## License

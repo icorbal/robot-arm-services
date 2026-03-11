@@ -12,7 +12,7 @@ import yaml
 from src.api import app, set_executor
 from src.executor import TaskExecutor
 from src.llm_adapter import create_llm_adapter
-from src.perception import StereoPerceiver
+from src.perception import Perceiver
 from src.planner import TaskPlanner
 from src.verifier import TaskVerifier
 
@@ -106,7 +106,7 @@ def main() -> None:
     # Create perceiver if in camera mode
     perceiver = None
     if perception_mode == "camera":
-        perceiver = StereoPerceiver(
+        perceiver = Perceiver(
             llm=llm,
             image_width=image_width,
             image_height=image_height,

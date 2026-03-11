@@ -129,12 +129,12 @@ async def task_status():
 
 @app.get("/snapshot")
 async def take_snapshot(width: int = 1024, height: int = 768):
-    """Take an on-demand stereo perception snapshot.
+    """Take an on-demand perception snapshot.
 
     Captures images at the current arm position (does NOT move the arm).
     Use for mid-task situation assessment or debugging.
 
-    Returns stereo images, camera params, scene state, and interaction zone check.
+    Returns images, camera params, scene state, and interaction zone check.
     """
     executor = get_executor()
     try:

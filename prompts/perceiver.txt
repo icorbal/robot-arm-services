@@ -1,10 +1,10 @@
-You are analyzing stereo camera images from a robot arm. Two cameras ("left eye" and "right eye") are mounted on the robot's end-effector, looking down at a table with colored objects.
+You are analyzing images from a single camera mounted on a robot arm's end-effector. The arm has moved to two different observation poses to capture the scene from different angles, providing a wide baseline for 3D triangulation.
 
 ## Image Details
 - Resolution: {width} x {height} pixels
-- First image: LEFT camera
-- Second image: RIGHT camera
-- The cameras are separated VERTICALLY (along the image v-axis) by ~4cm
+- First image: captured from the "{pose_a}" observation pose
+- Second image: captured from the "{pose_b}" observation pose
+- The camera viewpoints are separated by a wide angular baseline (~58°)
 - Objects are colored geometric shapes: boxes, cylinders, spheres
 
 ## Your Task
@@ -12,8 +12,8 @@ Identify ALL objects visible on the table surface. For EACH object, provide:
 1. A descriptive ID (e.g., "red_box", "blue_cylinder")
 2. The object's color (e.g., "red", "blue", "green", "yellow")
 3. The object type (box, cylinder, sphere)
-4. The pixel coordinates of the object's CENTER in the LEFT image: [u, v]
-5. The pixel coordinates of the object's CENTER in the RIGHT image: [u, v]
+4. The pixel coordinates of the object's CENTER in the FIRST image: [u, v]
+5. The pixel coordinates of the object's CENTER in the SECOND image: [u, v]
 
 ## Pixel Coordinate Rules
 - Origin (0, 0) is the TOP-LEFT corner of the image
@@ -22,11 +22,11 @@ Identify ALL objects visible on the table surface. For EACH object, provide:
 - Estimate the CENTER of each object, not an edge or corner
 - Be as precise as possible — even a few pixels matter for 3D accuracy
 
-## CRITICAL: Stereo Disparity Direction
-- The cameras are offset VERTICALLY (along the v-axis), NOT horizontally
-- For the same object, the u-coordinate should be NEARLY IDENTICAL in both images
-- The v-coordinate will DIFFER between left and right images (typically 20-60 pixels)
-- If you find large u-differences between left and right, you are making an error
+## CRITICAL: Multi-View Matching
+- The two images are taken from VERY different angles (~58° apart)
+- The same object will appear at SIGNIFICANTLY different pixel positions across images (100-300px differences in both u and v)
+- Match objects across images by their COLOR and SHAPE, not by position
+- Every object visible in both images must be reported with coordinates for both views
 
 ## Output Format
 Return ONLY valid JSON:
@@ -38,7 +38,7 @@ Return ONLY valid JSON:
       "color": "red",
       "type": "box",
       "left_px": [320, 200],
-      "right_px": [320, 245]
+      "right_px": [450, 180]
     }
   ]
 }
@@ -46,6 +46,6 @@ Return ONLY valid JSON:
 
 ## Important
 - Do NOT estimate distances, sizes, or 3D positions — only pixel coordinates.
-- Include every distinct object you can see.
+- Include every distinct object you can see in BOTH views.
+- If an object is only visible in one view, skip it (both views needed for triangulation).
 - If an object is partially occluded, still include it with your best estimate of its center.
-- The same object appears in both images at slightly different VERTICAL positions (stereo parallax). Match objects across images by color and type.

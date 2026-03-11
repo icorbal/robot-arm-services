@@ -215,7 +215,7 @@ async def test_executor_pick_up_loop():
 
     call_count = {"get": 0}
 
-    async def mock_get(url):
+    async def mock_get(url, **kwargs):
         call_count["get"] += 1
         # After step 3, return picked up state
         if call_count["get"] >= 5:
@@ -226,7 +226,7 @@ async def test_executor_pick_up_loop():
             return picked
         return mock_response_state
 
-    async def mock_post(url, json=None):
+    async def mock_post(url, json=None, **kwargs):
         return mock_response_exec
 
     executor._client.get = mock_get
@@ -277,10 +277,10 @@ async def test_executor_max_iterations():
     }
     mock_exec_resp.raise_for_status = MagicMock()
 
-    async def mock_get(url):
+    async def mock_get(url, **kwargs):
         return mock_resp
 
-    async def mock_post(url, json=None):
+    async def mock_post(url, json=None, **kwargs):
         return mock_exec_resp
 
     executor._client.get = mock_get

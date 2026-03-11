@@ -1,4 +1,4 @@
-"""Tests for stereo triangulation math."""
+"""Tests for multi-view triangulation math."""
 
 import math
 
@@ -74,7 +74,7 @@ def _project_point(world_point: np.ndarray, cam: dict, width: int, height: int) 
 
 
 class TestTriangulation:
-    """Test stereo triangulation with known geometry."""
+    """Test multi-view triangulation with known geometry."""
 
     def test_basic_triangulation(self):
         """Two cameras looking at a known 3D point should triangulate correctly."""
