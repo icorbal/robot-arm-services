@@ -6,11 +6,20 @@ from typing import Any
 
 import httpx
 
-from .perception import StereoPerceiver
+from .perception import StereoPerceiver, triangulate_point
 from .planner import TaskPlanner
 from .verifier import TaskVerifier
 
 logger = logging.getLogger(__name__)
+
+
+class InteractionZoneViolation(Exception):
+    """Raised when objects leave the interaction zone during execution."""
+
+    def __init__(self, violations: list[dict]):
+        self.violations = violations
+        ids = [v["id"] for v in violations]
+        super().__init__(f"Objects outside interaction zone: {', '.join(ids)}")
 
 
 class TaskExecutor:
@@ -36,6 +45,7 @@ class TaskExecutor:
         self._client = httpx.AsyncClient(timeout=10.0)
         self._cancel_event: asyncio.Event | None = None
         self._running = False
+        self._interaction_zone: list[float] | None = None
         logger.info(
             f"TaskExecutor initialized (rasim={rasim_url}, "
             f"max_iter={max_iterations}, delay={step_delay}s, "
@@ -58,6 +68,65 @@ class TaskExecutor:
     async def close(self) -> None:
         """Clean up HTTP client."""
         await self._client.aclose()
+
+    async def _fetch_interaction_zone(self) -> list[float] | None:
+        """Fetch and cache the interaction zone from RASim."""
+        if self._interaction_zone is not None:
+            return self._interaction_zone
+        try:
+            resp = await self._client.get(f"{self._rasim_url}/interaction-zone")
+            resp.raise_for_status()
+            self._interaction_zone = resp.json().get("interaction_zone")
+            if self._interaction_zone:
+                logger.info(f"Interaction zone: {self._interaction_zone}")
+            return self._interaction_zone
+        except Exception as e:
+            logger.warning(f"Could not fetch interaction zone: {e}")
+            return None
+
+    async def _check_interaction_zone(self) -> dict:
+        """Check if all props are within the interaction zone via RASim.
+
+        Returns:
+            Dict with 'ok' bool and 'violations' list.
+        """
+        try:
+            resp = await self._client.get(
+                f"{self._rasim_url}/interaction-zone/check"
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.warning(f"Interaction zone check failed: {e}")
+            return {"ok": True, "violations": []}
+
+    async def take_snapshot(
+        self, width: int = 1024, height: int = 768
+    ) -> dict[str, Any]:
+        """Take an on-demand stereo perception snapshot.
+
+        Captures images at the current arm position without moving to observe pose.
+        Use for mid-task situation assessment.
+
+        Returns:
+            Snapshot data with images, camera params, scene state, and zone check.
+        """
+        try:
+            resp = await self._client.get(
+                f"{self._rasim_url}/snapshot",
+                params={"width": width, "height": height},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info(
+                f"Snapshot taken: {len(data.get('scene_state', {}).get('props', []))} props, "
+                f"IZ ok={data.get('interaction_zone_check', {}).get('ok', '?')}"
+            )
+            return data
+        except Exception as e:
+            logger.error(f"Snapshot failed: {e}")
+            return {"error": str(e)}
 
     def _check_fallen_props(self, state: dict[str, Any]) -> list[str]:
         """Check if any props have fallen off the table.
@@ -150,6 +219,23 @@ class TaskExecutor:
         self, task: str, execution_log: list[dict]
     ) -> dict[str, Any]:
         """Internal execution loop (separated for cancellation cleanup)."""
+        # Fetch interaction zone at start
+        await self._fetch_interaction_zone()
+
+        # Pre-flight: verify all props are in the interaction zone before starting
+        iz_check = await self._check_interaction_zone()
+        if not iz_check.get("ok", True):
+            violations = iz_check.get("violations", [])
+            logger.error(f"Pre-flight IZ check failed: {violations}")
+            return {
+                "status": "interaction_zone_violation",
+                "error": f"Cannot start: objects outside interaction zone",
+                "violations": violations,
+                "task": task,
+                "iterations": 0,
+                "log": execution_log,
+            }
+
         for iteration in range(1, self._max_iterations + 1):
             logger.info(f"--- Iteration {iteration}/{self._max_iterations} ---")
 
@@ -285,6 +371,31 @@ class TaskExecutor:
                     "task": task,
                     "iterations": iteration,
                     "fallen_props": fallen,
+                    "final_scene_state": updated_state,
+                    "log": execution_log,
+                }
+
+            # 4c. Safety check: abort if any prop left the interaction zone
+            iz_check = await self._check_interaction_zone()
+            if not iz_check.get("ok", True):
+                violations = iz_check.get("violations", [])
+                violation_ids = [v["id"] for v in violations]
+                error_msg = (
+                    f"Interaction zone violation: {', '.join(violation_ids)} "
+                    f"moved outside the safe interaction area"
+                )
+                logger.error(error_msg)
+                execution_log.append({
+                    "iteration": iteration,
+                    "phase": "interaction_zone_violation",
+                    "violations": violations,
+                })
+                return {
+                    "status": "interaction_zone_violation",
+                    "error": error_msg,
+                    "task": task,
+                    "iterations": iteration,
+                    "violations": violations,
                     "final_scene_state": updated_state,
                     "log": execution_log,
                 }

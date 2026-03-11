@@ -46,3 +46,7 @@ ENV/
 *.swo
 *~
 .env.service
+
+# Test output
+test_output/
+test_results/

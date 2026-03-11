@@ -125,3 +125,25 @@ async def task_status():
     """Check if a task is currently running."""
     executor = get_executor()
     return {"running": executor.is_running}
+
+
+@app.get("/snapshot")
+async def take_snapshot(width: int = 1024, height: int = 768):
+    """Take an on-demand stereo perception snapshot.
+
+    Captures images at the current arm position (does NOT move the arm).
+    Use for mid-task situation assessment or debugging.
+
+    Returns stereo images, camera params, scene state, and interaction zone check.
+    """
+    executor = get_executor()
+    try:
+        result = await executor.take_snapshot(width=width, height=height)
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Snapshot failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

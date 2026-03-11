@@ -4,7 +4,7 @@ You are analyzing stereo camera images from a robot arm. Two cameras ("left eye"
 - Resolution: {width} x {height} pixels
 - First image: LEFT camera
 - Second image: RIGHT camera
-- The cameras have a ~4cm baseline (horizontal separation)
+- The cameras are separated VERTICALLY (along the image v-axis) by ~4cm
 - Objects are colored geometric shapes: boxes, cylinders, spheres
 
 ## Your Task
@@ -22,6 +22,12 @@ Identify ALL objects visible on the table surface. For EACH object, provide:
 - Estimate the CENTER of each object, not an edge or corner
 - Be as precise as possible — even a few pixels matter for 3D accuracy
 
+## CRITICAL: Stereo Disparity Direction
+- The cameras are offset VERTICALLY (along the v-axis), NOT horizontally
+- For the same object, the u-coordinate should be NEARLY IDENTICAL in both images
+- The v-coordinate will DIFFER between left and right images (typically 20-60 pixels)
+- If you find large u-differences between left and right, you are making an error
+
 ## Output Format
 Return ONLY valid JSON:
 ```json
@@ -31,8 +37,8 @@ Return ONLY valid JSON:
       "id": "red_box",
       "color": "red",
       "type": "box",
-      "left_px": [320, 240],
-      "right_px": [325, 240]
+      "left_px": [320, 200],
+      "right_px": [320, 245]
     }
   ]
 }
@@ -42,4 +48,4 @@ Return ONLY valid JSON:
 - Do NOT estimate distances, sizes, or 3D positions — only pixel coordinates.
 - Include every distinct object you can see.
 - If an object is partially occluded, still include it with your best estimate of its center.
-- The same object appears in both images at slightly different horizontal positions (stereo parallax). Match objects across images by color and type.
+- The same object appears in both images at slightly different VERTICAL positions (stereo parallax). Match objects across images by color and type.
