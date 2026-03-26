@@ -99,7 +99,7 @@ class TaskPlanner:
             .replace("{x_max}", str(bounds[1]))
             .replace("{y_min}", str(bounds[2]))
             .replace("{y_max}", str(bounds[3]))
-            .replace("{scene_state}", json.dumps(slim_state, indent=2))
+            .replace("{scene_state}", json.dumps(slim_state, separators=(",", ":")))
             .replace("{task}", task)
             .replace("{history}", history_text)
         )
@@ -107,7 +107,7 @@ class TaskPlanner:
         logger.info(f"Planning next step for task: {task}")
         result = await self._llm.generate(
             system_prompt=system_prompt,
-            user_prompt=f"Plan the next phase for: {task}",
+            user_prompt="Plan the next phase.",
         )
 
         # Validate response format

@@ -37,101 +37,45 @@ def _get_prop_height(prop: dict[str, Any]) -> float:
 def _compute_spatial_facts(scene_state: dict[str, Any]) -> str:
     """Compute spatial relationships between all props programmatically.
 
-    Returns a human-readable summary of computed facts for the LLM.
+    Returns a compact summary of computed facts for the LLM.
     """
     props = scene_state.get("props", [])
     workspace = scene_state.get("workspace", {})
     surface_height = workspace.get("surface_height", 0.42)
-    bounds = workspace.get("bounds", [0.1, 0.9, -0.4, 0.4])
 
     if not props:
         return "No props in scene."
 
-    lines = ["## Computed Spatial Facts (programmatic — trust these over your own math)"]
+    lines = []
 
-    # Per-prop position summary
-    lines.append("\n### Object Positions")
+    # Per-prop: compact one-liner
     for p in props:
-        pid = p["id"]
         pos = p.get("pos", [0, 0, 0])
         height = _get_prop_height(p)
-        top_z = pos[2] + height / 2
         bottom_z = pos[2] - height / 2
         on_table = abs(bottom_z - surface_height) < _POS_TOLERANCE
-        lines.append(
-            f"- **{pid}**: center=({pos[0]:.4f}, {pos[1]:.4f}, {pos[2]:.4f}), "
-            f"height={height:.4f}, top_z={top_z:.4f}, bottom_z={bottom_z:.4f}, "
-            f"on_table={'YES' if on_table else 'NO'}"
-        )
+        lines.append(f"{p['id']}: pos=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}) "
+                     f"{'on_table' if on_table else 'stacked/lifted'}")
 
-    # Check stacking relationships (A on top of B)
-    lines.append("\n### Stacking Relationships")
-    found_stacks = False
+    # Only report confirmed stacks (skip negatives — absence = not stacked)
+    stacks = []
     for a in props:
         for b in props:
             if a["id"] == b["id"]:
                 continue
             a_pos = a.get("pos", [0, 0, 0])
             b_pos = b.get("pos", [0, 0, 0])
-            b_height = _get_prop_height(b)
-            b_top_z = b_pos[2] + b_height / 2
+            b_top_z = b_pos[2] + _get_prop_height(b) / 2
             a_bottom_z = a_pos[2] - _get_prop_height(a) / 2
-
-            # Check if A is on top of B:
-            # - A's bottom ≈ B's top
-            # - A and B are close in X/Y
             xy_dist = ((a_pos[0] - b_pos[0]) ** 2 + (a_pos[1] - b_pos[1]) ** 2) ** 0.5
-            z_match = abs(a_bottom_z - b_top_z) < _STACK_Z_TOLERANCE
 
-            if z_match and xy_dist < _POS_TOLERANCE:
-                lines.append(f"- ✅ **{a['id']}** IS on top of **{b['id']}** "
-                             f"(a_bottom={a_bottom_z:.4f}, b_top={b_top_z:.4f}, "
-                             f"xy_dist={xy_dist:.4f})")
-                found_stacks = True
-            elif xy_dist < _POS_TOLERANCE and abs(a_pos[2] - b_pos[2]) > 0.02:
-                # Close in XY but not matching stack height — near miss
-                lines.append(f"- ❌ {a['id']} is NOT on top of {b['id']} "
-                             f"(a_bottom={a_bottom_z:.4f}, b_top={b_top_z:.4f}, "
-                             f"gap={abs(a_bottom_z - b_top_z):.4f}, "
-                             f"xy_dist={xy_dist:.4f})")
+            if abs(a_bottom_z - b_top_z) < _STACK_Z_TOLERANCE and xy_dist < _POS_TOLERANCE:
+                stacks.append(f"✅ {a['id']} ON {b['id']}")
 
-    if not found_stacks:
-        lines.append("- No objects are stacked on each other.")
-
-    # Axis ordering (useful for arrangement/sorting tasks)
-    lines.append("\n### Axis Ordering")
-    for axis_name, axis_idx, direction in [
-        ("X-axis (left=low, right=high)", 0, 1),
-        ("Y-axis (left=high, right=low for viewer)", 1, -1),
-        ("Y-axis ascending", 1, 1),
-    ]:
-        sorted_props = sorted(props, key=lambda p: p.get("pos", [0,0,0])[axis_idx], reverse=(direction == -1))
-        order_str = " → ".join(
-            f"{p['color']}({p.get('pos',[0,0,0])[axis_idx]:.4f})"
-            for p in sorted_props
-        )
-        color_order = ", ".join(p["color"] for p in sorted_props)
-        lines.append(f"- {axis_name}: {order_str}")
-        lines.append(f"  Color order: [{color_order}]")
-
-    # Check for fallen/out-of-bounds props
-    x_min, x_max, y_min, y_max = bounds
-    fallen = []
-    for p in props:
-        pos = p.get("pos", [0, 0, 0])
-        if (pos[2] < surface_height - 0.05 or
-                pos[0] < x_min - 0.1 or pos[0] > x_max + 0.1 or
-                pos[1] < y_min - 0.1 or pos[1] > y_max + 0.1):
-            fallen.append(p["id"])
-    if fallen:
-        lines.append(f"\n### ⚠️ Fallen/Out-of-bounds: {', '.join(fallen)}")
-
-    # Gripper state
-    arm = scene_state.get("arm", {})
-    grip_open = arm.get("grip_open", True)
-    grip_pos = arm.get("gripper_pos", [0, 0, 0])
-    lines.append(f"\n### Gripper: {'OPEN' if grip_open else 'CLOSED'} at "
-                 f"({grip_pos[0]:.4f}, {grip_pos[1]:.4f}, {grip_pos[2]:.4f})")
+    if stacks:
+        lines.append("Stacks: " + "; ".join(stacks))
+    else:
+        lines.append("Stacks: none")
 
     return "\n".join(lines)
 
@@ -181,9 +125,9 @@ class TaskVerifier:
             .replace("{task}", task)
         )
 
-        user_msg = f"Is this task complete? {task}"
+        user_msg = "Verify completion."
         if images:
-            user_msg += "\n\nAttached: camera images from left and right observation poses for visual confirmation."
+            user_msg += " Images attached."
 
         logger.info(f"Verifying task completion: {task}")
         result = await self._llm.generate(

@@ -1,22 +1,14 @@
-You verify robot arm task completion using pre-computed spatial facts. Table surface Z={surface_height}.
+Verify robot arm task completion using pre-computed spatial facts. Table Z={surface_height}.
 
-## Spatial Analysis (computed programmatically — AUTHORITATIVE)
 {spatial_facts}
 
-## Task
-{task}
+Task: {task}
 
-## Rules
-1. ✅ entries in spatial facts = confirmed true. Do NOT second-guess them.
-2. Missing ✅ for a pair = NOT stacked, even if you think it should be.
-3. Multi-step tasks: ALL sub-goals must be satisfied. Partial = not complete.
-4. on_table=YES means object has NOT been lifted/stacked.
+Rules:
+1. ✅ = confirmed stacked. Do NOT second-guess.
+2. No ✅ for a pair = NOT stacked.
+3. ALL sub-goals must be satisfied. Partial = not complete.
+4. on_table=YES means not stacked.
 
-## Ordering Tasks
-Check "Axis Ordering" in spatial facts. If the color order matches the task, it IS complete. Only relative order matters, not exact positions.
-
-## Output
-JSON only:
-```json
-{{"completed": true/false, "reason": "brief explanation with coordinates", "confidence": 0.0-1.0}}
-```
+Output JSON only:
+{{"completed":true/false,"reason":"brief explanation","confidence":0.0-1.0}}
